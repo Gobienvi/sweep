@@ -1,0 +1,7 @@
+rumps
+Pillow
+imagehash
+send2trash
+pyinstaller
+pytest
+numpy
