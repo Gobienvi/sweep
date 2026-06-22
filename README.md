@@ -24,6 +24,7 @@ No subscription. No upsell. Just a fast, native macOS app that lives in your men
 - **Mail Attachments** — old attachments from Apple Mail
 - **Docker** — prunes unused images, containers, and volumes
 - **Large Files** — anything over 500 MB hiding in your home folder
+- **Login Items** — shows what launches at startup, lets you remove them
 
 ---
 
@@ -33,7 +34,25 @@ No subscription. No upsell. Just a fast, native macOS app that lives in your men
 
 Requires macOS 13 or later (Apple Silicon + Intel).
 
-> **First launch:** Right-click → Open → Open anyway (macOS Gatekeeper warning for unsigned apps)
+### First launch (important)
+
+macOS will block the app because it's not signed by Apple. To open it:
+
+**Option 1 — right-click method:**
+1. Right-click `Sweep.app` → **Open**
+2. Click **Open** in the dialog
+
+**Option 2 — System Settings:**
+1. Try to open Sweep (it will be blocked)
+2. Go to **System Settings → Privacy & Security**
+3. Scroll down → click **Open Anyway**
+
+**Option 3 — terminal (fastest):**
+```bash
+xattr -d com.apple.quarantine /Applications/Sweep.app
+```
+
+You only need to do this once. macOS remembers after the first open.
 
 ---
 

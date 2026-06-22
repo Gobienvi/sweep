@@ -139,6 +139,7 @@ class SweepApp(rumps.App):
         large_files = scanner.scan_large_files()
         recordings = scanner.scan_recordings()
         docker = scanner.scan_docker()
+        login_items = scanner.scan_login_items()
         duplicates = [f for group in duplicate_groups for f in group[1:]]
         return {
             "screenshots": screenshots,
@@ -155,6 +156,7 @@ class SweepApp(rumps.App):
             "large_files": large_files,
             "recordings": recordings,
             "docker": docker,
+            "login_items": login_items,
         }
 
     @rumps.clicked("Scan Only")
@@ -190,6 +192,7 @@ class SweepApp(rumps.App):
             ("trash",           lambda: scanner.scan_trash(),             "Checking Trash…",                  {"size": 0, "path": ""}),
             ("language_files",  lambda: scanner.scan_language_files(),    "Scanning language files…",         []),
             ("mail_attachments",lambda: scanner.scan_mail_attachments(),  "Checking mail attachments…",       []),
+            ("login_items",     lambda: scanner.scan_login_items(),       "Checking login items…",            []),
         ]
         total = len(steps)
         data: dict = {}

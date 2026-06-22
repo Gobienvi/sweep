@@ -10,6 +10,7 @@ def move_to_trash(paths: list[str]) -> tuple[int, int]:
     fail = 0
     for path in paths:
         if not os.path.exists(path):
+            ok += 1  # already gone — goal achieved
             continue
         try:
             send2trash(path)
@@ -34,7 +35,7 @@ def _osascript_trash(path: str) -> None:
 
 
 def _clear_dir_contents(path: str) -> bool:
-    """Delete each item inside a directory when the dir itself can't be trashed."""
+    """Move each item inside a directory to Trash when the dir itself can't be trashed."""
     cleared = False
     try:
         entries = list(os.scandir(path))
@@ -45,14 +46,7 @@ def _clear_dir_contents(path: str) -> bool:
             send2trash(entry.path)
             cleared = True
         except Exception:
-            try:
-                if entry.is_dir(follow_symlinks=False):
-                    shutil.rmtree(entry.path, ignore_errors=True)
-                else:
-                    os.remove(entry.path)
-                cleared = True
-            except Exception:
-                pass
+            pass
     return cleared
 
 
@@ -113,6 +107,22 @@ def delete_permanent(paths: list[str]) -> tuple[int, int]:
             elif os.path.isfile(path):
                 os.remove(path)
             ok += 1
+        except Exception:
+            fail += 1
+    return ok, fail
+
+
+def remove_login_items(names: list[str]) -> tuple[int, int]:
+    ok, fail = 0, 0
+    for name in names:
+        escaped = name.replace("\\", "\\\\").replace('"', '\\"')
+        script = f'tell application "System Events" to delete login item "{escaped}"'
+        try:
+            r = subprocess.run(["osascript", "-e", script], capture_output=True, timeout=10)
+            if r.returncode == 0:
+                ok += 1
+            else:
+                fail += 1
         except Exception:
             fail += 1
     return ok, fail

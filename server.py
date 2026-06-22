@@ -166,6 +166,11 @@ class _Handler(BaseHTTPRequestHandler):
                 if result.get("success"): notifier.mark_cleaned()
                 self._json(result)
 
+            elif path == "/clean/login_items":
+                names = body.get("names", [])
+                ok, fail = cleaner.remove_login_items(names)
+                self._json({"ok": ok, "fail": fail})
+
             elif path == "/clean/lang":
                 ok, fail = cleaner.delete_permanent(body.get("paths", []))
                 if ok: notifier.mark_cleaned()
@@ -173,7 +178,9 @@ class _Handler(BaseHTTPRequestHandler):
 
             elif path == "/reveal":
                 import subprocess as _sp
-                _sp.run(["open", "-R", body.get("path", "")], capture_output=True)
+                p = body.get("path", "")
+                if p:
+                    _sp.run(["open", "-R", p], capture_output=True)
                 self._json({"ok": True})
 
             elif path == "/rescan":

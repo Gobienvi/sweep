@@ -1,6 +1,19 @@
 #!/bin/bash
 set -e
 
+# ── Notarization credentials ──────────────────────────────────────────────────
+# Fill these in once you have an Apple Developer account ($99/year).
+# Get TEAM_ID from: https://developer.apple.com/account → Membership → Team ID
+# Get APP_PASSWORD from: https://appleid.apple.com → App-Specific Passwords
+# IDENTITY comes from: security find-identity -v -p codesigning
+#
+NOTARIZE=false   # set to true once credentials are filled in below
+TEAM_ID=""
+APPLE_ID=""
+APP_PASSWORD=""
+IDENTITY=""      # e.g. "Developer ID Application: Jun Kim (ABC123XYZ)"
+# ─────────────────────────────────────────────────────────────────────────────
+
 source venv/bin/activate
 
 pyinstaller -y \
@@ -32,18 +45,59 @@ add_key NSDocumentsFolderUsageDescription  "Sweep scans Documents for recordings
 add_key NSPicturesFolderUsageDescription   "Sweep scans your Photos library for blurry and duplicate images."
 add_key NSRemovableVolumesUsageDescription "Sweep scans removable drives for junk files."
 
-# Re-sign after plist edit
-codesign --force --deep --sign - "dist/Sweep.app"
-
-# Package into a distributable .dmg
 VERSION=$(python -c "from version import __version__; print(__version__)")
 DMG="dist/Sweep-${VERSION}.dmg"
-rm -f "$DMG"
-hdiutil create \
-  -volname "Sweep" \
-  -srcfolder "dist/Sweep.app" \
-  -ov -format UDZO \
-  "$DMG"
 
-echo "Build complete: dist/Sweep.app"
-echo "Installer ready: $DMG"
+if [ "$NOTARIZE" = true ]; then
+  # ── Signed + notarized build (for distribution) ───────────────────────────
+  echo "Signing with Developer ID…"
+  codesign --deep --force --options runtime \
+    --entitlements entitlements.plist \
+    --sign "$IDENTITY" \
+    "dist/Sweep.app"
+
+  codesign --verify --deep --strict "dist/Sweep.app"
+  echo "Signature verified ✓"
+
+  echo "Creating DMG…"
+  rm -f "$DMG"
+  hdiutil create \
+    -volname "Sweep" \
+    -srcfolder "dist/Sweep.app" \
+    -ov -format UDZO \
+    "$DMG"
+
+  echo "Submitting to Apple notarization service…"
+  xcrun notarytool submit "$DMG" \
+    --apple-id "$APPLE_ID" \
+    --team-id "$TEAM_ID" \
+    --password "$APP_PASSWORD" \
+    --wait
+
+  echo "Stapling notarization ticket to DMG…"
+  xcrun stapler staple "$DMG"
+
+  echo "Verifying notarization…"
+  spctl --assess --type open --context context:primary-signature "$DMG"
+  echo "Notarization complete ✓"
+
+else
+  # ── Ad-hoc signed build (for local testing only) ─────────────────────────
+  codesign --force --deep --sign - "dist/Sweep.app"
+
+  rm -f "$DMG"
+  hdiutil create \
+    -volname "Sweep" \
+    -srcfolder "dist/Sweep.app" \
+    -ov -format UDZO \
+    "$DMG"
+fi
+
+echo ""
+echo "Build complete:   dist/Sweep.app"
+echo "Installer ready:  $DMG"
+if [ "$NOTARIZE" = false ]; then
+  echo ""
+  echo "⚠️  Ad-hoc signed only — users will see Gatekeeper warning."
+  echo "   Set NOTARIZE=true with Developer ID credentials to ship publicly."
+fi

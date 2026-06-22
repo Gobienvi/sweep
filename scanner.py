@@ -423,6 +423,37 @@ def scan_mail_attachments() -> list[dict]:
 
 
 
+def scan_login_items() -> list[dict]:
+    """Return apps that launch automatically at login via AppleScript."""
+    try:
+        r = subprocess.run(
+            ["osascript",
+             "-e", 'tell application "System Events"',
+             "-e", 'set output to ""',
+             "-e", 'repeat with li in login items',
+             "-e", 'set output to output & (name of li) & "\t" & (path of li) & "\n"',
+             "-e", 'end repeat',
+             "-e", 'return output',
+             "-e", 'end tell'],
+            capture_output=True, text=True, timeout=10
+        )
+        if r.returncode != 0:
+            return []
+        items = []
+        for line in r.stdout.strip().splitlines():
+            if "\t" in line:
+                name, path = line.split("\t", 1)
+                name = name.strip()
+                path = path.strip()
+                if path == "missing value":
+                    path = ""
+                if name:
+                    items.append({"name": name, "path": path})
+        return items
+    except Exception:
+        return []
+
+
 def scan_docker() -> dict:
     try:
         result = subprocess.run(

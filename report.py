@@ -179,6 +179,7 @@ def _build_html(scan_result: dict, port: int = 0) -> str:
     large_files    = scan_result.get("large_files", [])
     recordings     = scan_result.get("recordings", [])
     docker         = scan_result.get("docker", {})
+    login_items    = scan_result.get("login_items", [])
 
     def sz(n): return _format_bytes(n)
 
@@ -219,6 +220,9 @@ def _build_html(scan_result: dict, port: int = 0) -> str:
                 ".mov": "🎬", ".pkg": "📦", ".app": "🖥️"}.get(ext, "📄")
         return f'<div class="thumb-ph">{icon}</div>'
 
+    def _he(s: str) -> str:
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
     def file_rows(paths, checkable=True, thumb_limit=50, default_checked=True, reveal=False):
         if not paths:
             return "<div class='empty-state'><span>✓</span><p>Nothing found</p></div>"
@@ -228,13 +232,13 @@ def _build_html(scan_result: dict, port: int = 0) -> str:
             folder = os.path.dirname(p).replace(os.path.expanduser("~"), "~")
             try: size = sz(os.path.getsize(p))
             except OSError: size = "—"
-            cb = f'<input type="checkbox" class="cb" value="{p}" {"checked" if default_checked else ""}>' if checkable else ""
+            safe_p = _he(p)
+            cb = f'<input type="checkbox" class="cb" value="{safe_p}" {"checked" if default_checked else ""}>' if checkable else ""
             thumb = thumb_tag(p) if i < thumb_limit else f'<div class="thumb-ph">📄</div>'
-            safe_p = p.replace("&", "&amp;").replace('"', "&quot;")
             reveal_btn = f'<button class="reveal-btn" onclick="revealInFinder(this.dataset.path)" data-path="{safe_p}">Show in Finder</button>' if reveal else ""
-            rows += f"""<div class="file-row" data-path="{p}">
+            rows += f"""<div class="file-row" data-path="{safe_p}">
               {cb}{thumb}
-              <div class="file-info"><div class="file-name">{name}</div><div class="file-folder">{folder}</div></div>
+              <div class="file-info"><div class="file-name">{_he(name)}</div><div class="file-folder">{_he(folder)}</div></div>
               <div class="file-size">{size}</div>{reveal_btn}
             </div>"""
         return rows
@@ -248,11 +252,12 @@ def _build_html(scan_result: dict, port: int = 0) -> str:
             name = os.path.basename(p)
             folder = os.path.dirname(p).replace(os.path.expanduser("~"), "~")
             size = sz(item["size"])
+            safe_p = _he(p)
             date = f'<div class="file-size" style="width:100px">{_fmt_date(item["mtime"])}</div>' if show_date else ""
-            cb = f'<input type="checkbox" class="cb" value="{p}" checked>' if checkable else ""
-            rows += f"""<div class="file-row" data-path="{p}">
+            cb = f'<input type="checkbox" class="cb" value="{safe_p}" checked>' if checkable else ""
+            rows += f"""<div class="file-row" data-path="{safe_p}">
               {cb}<div class="thumb-ph">📁</div>
-              <div class="file-info"><div class="file-name">{name}</div><div class="file-folder">{folder}</div></div>
+              <div class="file-info"><div class="file-name">{_he(name)}</div><div class="file-folder">{_he(folder)}</div></div>
               {date}<div class="file-size">{size}</div>
             </div>"""
         return rows
@@ -339,6 +344,20 @@ def _build_html(scan_result: dict, port: int = 0) -> str:
             </div>"""
         return rows
 
+    def login_item_rows(items):
+        if not items:
+            return "<div class='empty-state'><span>✓</span><p>No login items found</p></div>"
+        rows = ""
+        for item in items:
+            name = _he(item["name"])
+            path = _he(item.get("path", ""))
+            rows += f"""<div class="file-row" data-path="{name}">
+              <input type="checkbox" class="cb" value="{name}" checked>
+              <div class="thumb-ph">🚀</div>
+              <div class="file-info"><div class="file-name">{name}</div><div class="file-folder">{path}</div></div>
+            </div>"""
+        return rows
+
     sections_data = json.dumps({
         "screenshots":    screenshots,
         "bad_photos":     bad_photos,
@@ -353,6 +372,7 @@ def _build_html(scan_result: dict, port: int = 0) -> str:
         "large_files":    [f["path"] for f in large_files],
         "language_files": [f["path"] for f in language_files],
         "mail_attachments": [f["path"] for f in mail_attachments],
+        "login_items":    [i["name"] for i in login_items],
     }).replace("</", "<\\/")
 
     api = f"http://127.0.0.1:{port}" if port else ""
@@ -662,6 +682,10 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-s
   </div>
 
   <div class="sidebar-section">System</div>
+  <div class="nav-item" onclick="nav('login')">
+    <span class="nav-icon"><i data-lucide="rocket"></i></span><span class="label">Login Items</span>
+    <span class="badge {'has-items' if login_items else ''}">{len(login_items)}</span>
+  </div>
   <div class="nav-item" onclick="nav('docker')">
     <span class="nav-icon"><i data-lucide="box"></i></span><span class="label">Docker</span>
     <span class="badge {'has-items' if docker.get('available') else ''}">{'on' if docker.get('available') else 'off'}</span>
@@ -774,6 +798,12 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-s
         <div class="card-count">{len(large_files)}</div>
         <div class="card-label">Large Files</div>
         <div class="card-size">{sz(total_large)}</div>
+      </div>
+      <div class="dash-card {'zero' if not login_items else ''}" onclick="nav('login')">
+        <div class="card-icon-wrap"><i data-lucide="rocket"></i></div>
+        <div class="card-count">{len(login_items)}</div>
+        <div class="card-label">Login Items</div>
+        <div class="card-size">startup apps</div>
       </div>
     </div>
 
@@ -975,6 +1005,21 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-s
     <div class="file-list">{lang_rows(language_files)}</div>
   </div>
 
+  <!-- Login Items -->
+  <div class="view" id="view-login">
+    <div class="sec-header">
+      <div class="sec-icon-wrap"><i data-lucide="rocket"></i></div>
+      <div class="sec-title"><h2>Login Items</h2><p>{len(login_items)} app(s) launch automatically at startup</p></div>
+    </div>
+    <div class="warning-bar">ℹ️ Removing an item only stops it auto-launching — the app itself is not deleted.</div>
+    <div class="action-bar">
+      <button class="select-all-btn" onclick="toggleAll('login')">Select All</button>
+      <span class="sel-count" id="cnt-login"></span>
+      <button class="delete-btn" onclick="cleanLoginItems()">Remove Selected</button>
+    </div>
+    <div class="file-list">{login_item_rows(login_items)}</div>
+  </div>
+
   <!-- Trash -->
   <div class="view" id="view-trash">
     <div class="sec-header">
@@ -1001,7 +1046,7 @@ const _NAV_LABELS = {{
   dashboard:'Dashboard', screenshots:'Screenshots', bad:'Blurry & Dark',
   dupes:'Duplicates', downloads:'Downloads', mail:'Mail Attachments',
   browser:'Browser Cache', nm:'node_modules', cache:'Dev Cache',
-  docker:'Docker', ios:'iOS Backups', xcode:'Xcode Archives',
+  login:'Login Items', docker:'Docker', ios:'iOS Backups', xcode:'Xcode Archives',
   rec:'Recordings', large:'Large Files', lang:'Language Files', trash:'Trash'
 }};
 function nav(id) {{
@@ -1118,6 +1163,13 @@ async function cleanLangFiles() {{
   markCleaned('lang');
   toast(`Deleted ${{r.ok}} language pack(s)${{r.fail ? ' · ' + r.fail + ' failed' : ''}} — rescanning…`);
   hintRescan();
+}}
+async function cleanLoginItems() {{
+  const names = getChecked('login');
+  if (!names.length) {{ toast('Nothing selected', false); return; }}
+  const r = await post('/clean/login_items', {{names}});
+  markCleaned('login');
+  toast(`Removed ${{r.ok}} login item(s) from startup${{r.fail ? ' · ' + r.fail + ' failed' : ''}}`);
 }}
 async function emptyTrash() {{
   toast('Emptying Trash…');
