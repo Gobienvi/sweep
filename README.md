@@ -1,4 +1,4 @@
-# Sweep 🧹
+# Sweep
 
 A free, open-source Mac cleaner that finds and removes junk files — screenshots, blurry photos, duplicate images, old downloads, dev caches, node_modules, iOS backups, and more.
 
