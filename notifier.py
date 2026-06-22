@@ -20,5 +20,7 @@ def mark_cleaned() -> None:
 
 
 def send_notification(title: str, message: str) -> None:
-    script = f'display notification "{message}" with title "{title}" sound name "Glass"'
+    safe_title = title.replace("\\", "\\\\").replace('"', '\\"')
+    safe_msg = message.replace("\\", "\\\\").replace('"', '\\"')
+    script = f'display notification "{safe_msg}" with title "{safe_title}" sound name "Glass"'
     subprocess.run(["osascript", "-e", script], capture_output=True)

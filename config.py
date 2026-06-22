@@ -9,8 +9,13 @@ def load() -> dict:
         default = {"last_cleaned": None}
         save(default)
         return default
-    with open(CONFIG_PATH) as f:
-        return json.load(f)
+    try:
+        with open(CONFIG_PATH) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        default = {"last_cleaned": None}
+        save(default)
+        return default
 
 
 def save(data: dict) -> None:

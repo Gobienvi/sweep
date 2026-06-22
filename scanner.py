@@ -6,11 +6,13 @@ import time
 import imagehash
 import numpy as np
 from PIL import Image
+from scipy.ndimage import convolve
 
 BLUR_THRESHOLD = 100.0
 DARK_THRESHOLD = 30.0
 OLD_DAYS = 30
 LARGE_FILE_MB = 500
+MAX_PHOTOS = 5_000
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".heic", ".webp")
 SCREENSHOT_PATTERNS = ("Screenshot", "Screen Shot", "Capture")
 SCREENSHOT_FOLDERS = [
@@ -81,7 +83,6 @@ def _laplacian_variance(img: Image.Image) -> float:
     gray = img.convert("L")
     arr = np.array(gray, dtype=float)
     kernel = np.array([[0, 1, 0], [1, -4, 1], [0, 1, 0]])
-    from scipy.ndimage import convolve
     lap = convolve(arr, kernel)
     return float(np.var(lap))
 
@@ -106,12 +107,17 @@ def _is_bad_photo(path: str) -> bool:
 def scan_bad_photos(folder: str | None = None) -> list[str]:
     folder = folder or os.path.expanduser("~/Pictures")
     bad = []
+    scanned = 0
     if not os.path.isdir(folder):
         return bad
-    for root, _, files in os.walk(folder):
+    for root, dirnames, files in os.walk(folder):
+        dirnames[:] = [d for d in dirnames if not d.endswith(".photoslibrary")]
         for fname in files:
+            if scanned >= MAX_PHOTOS:
+                return bad
             if fname.lower().endswith(IMAGE_EXTENSIONS):
                 path = os.path.join(root, fname)
+                scanned += 1
                 if _is_bad_photo(path):
                     bad.append(path)
     return bad
@@ -120,12 +126,17 @@ def scan_bad_photos(folder: str | None = None) -> list[str]:
 def scan_duplicates(folder: str | None = None) -> list[list[str]]:
     folder = folder or os.path.expanduser("~/Pictures")
     hash_map: dict[str, list[str]] = {}
+    scanned = 0
     if not os.path.isdir(folder):
         return []
-    for root, _, files in os.walk(folder):
+    for root, dirnames, files in os.walk(folder):
+        dirnames[:] = [d for d in dirnames if not d.endswith(".photoslibrary")]
         for fname in files:
+            if scanned >= MAX_PHOTOS:
+                return [paths for paths in hash_map.values() if len(paths) > 1]
             if fname.lower().endswith(IMAGE_EXTENSIONS):
                 path = os.path.join(root, fname)
+                scanned += 1
                 try:
                     with Image.open(path) as img:
                         h = str(imagehash.phash(img))
@@ -134,18 +145,6 @@ def scan_duplicates(folder: str | None = None) -> list[list[str]]:
                     continue
     return [paths for paths in hash_map.values() if len(paths) > 1]
 
-
-def scan_old_downloads(folder: str | None = None, days: int = OLD_DAYS) -> list[str]:
-    folder = folder or DOWNLOAD_FOLDER
-    if not os.path.isdir(folder):
-        return []
-    cutoff = time.time() - days * 86400
-    old = []
-    for fname in os.listdir(folder):
-        path = os.path.join(folder, fname)
-        if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
-            old.append(path)
-    return old
 
 
 def scan_cache_size(dirs: list[str] | None = None) -> dict[str, int]:
@@ -262,12 +261,13 @@ def scan_xcode_archives() -> list[dict]:
         return []
     archives = []
     for root, dirnames, _ in os.walk(archive_root):
-        for d in dirnames:
+        for d in list(dirnames):
             if d.endswith(".xcarchive"):
                 path = os.path.join(root, d)
                 size = _dir_size(path)
                 mtime = os.path.getmtime(path)
                 archives.append({"path": path, "size": size, "mtime": mtime})
+                dirnames.remove(d)  # don't recurse into archive bundle
     return sorted(archives, key=lambda x: x["mtime"])
 
 
@@ -314,6 +314,113 @@ def scan_recordings() -> list[dict]:
                     except OSError:
                         continue
     return sorted(found, key=lambda x: x["size"], reverse=True)
+
+
+MAIL_ATTACHMENT_DIRS = [
+    "~/Library/Mail Downloads",
+    "~/Library/Containers/com.apple.mail/Data/Library/Mail Downloads",
+]
+
+
+def scan_downloads_all(folder: str | None = None) -> list[dict]:
+    folder = folder or DOWNLOAD_FOLDER
+    if not os.path.isdir(folder):
+        return []
+    now = time.time()
+    files = []
+    for fname in os.listdir(folder):
+        path = os.path.join(folder, fname)
+        if not os.path.isfile(path):
+            continue
+        try:
+            size = os.path.getsize(path)
+            mtime = os.path.getmtime(path)
+            files.append({"path": path, "size": size, "mtime": mtime,
+                          "age_days": int((now - mtime) / 86400)})
+        except OSError:
+            continue
+    return sorted(files, key=lambda x: x["mtime"], reverse=True)
+
+
+def scan_trash() -> dict:
+    path = os.path.expanduser("~/.Trash")
+    size = _dir_size(path) if os.path.isdir(path) else 0
+    return {"size": size, "path": path}
+
+
+def _system_languages() -> set[str]:
+    langs = {"en", "Base"}
+    try:
+        r = subprocess.run(
+            ["defaults", "read", "NSGlobalDomain", "AppleLanguages"],
+            capture_output=True, text=True, timeout=5
+        )
+        for token in r.stdout.replace("(", "").replace(")", "").split(","):
+            code = token.strip().strip('"').strip()
+            if code:
+                langs.add(code)
+                langs.add(code.split("-")[0])
+                langs.add(code.replace("-", "_"))
+    except Exception:
+        pass
+    return langs
+
+
+def scan_language_files() -> list[dict]:
+    keep = _system_languages()
+    found = []
+    for apps_dir in ("/Applications", os.path.expanduser("~/Applications")):
+        if not os.path.isdir(apps_dir):
+            continue
+        try:
+            app_names = os.listdir(apps_dir)
+        except OSError:
+            continue
+        for app in app_names:
+            if not app.endswith(".app"):
+                continue
+            resources = os.path.join(apps_dir, app, "Contents", "Resources")
+            if not os.path.isdir(resources):
+                continue
+            try:
+                for entry in os.scandir(resources):
+                    if not entry.name.endswith(".lproj"):
+                        continue
+                    lang = entry.name[:-6]
+                    if lang in keep:
+                        continue
+                    try:
+                        size = _dir_size(entry.path)
+                        if size > 0:
+                            found.append({"path": entry.path, "size": size,
+                                          "app": app, "lang": lang})
+                    except OSError:
+                        continue
+            except (OSError, PermissionError):
+                continue
+    return sorted(found, key=lambda x: x["size"], reverse=True)[:300]
+
+
+def scan_mail_attachments() -> list[dict]:
+    found = []
+    for d in MAIL_ATTACHMENT_DIRS:
+        expanded = os.path.expanduser(d)
+        if not os.path.isdir(expanded):
+            continue
+        for root, _, files in os.walk(expanded):
+            for fname in files:
+                if fname.startswith("."):
+                    continue
+                path = os.path.join(root, fname)
+                try:
+                    size = os.path.getsize(path)
+                    mtime = os.path.getmtime(path)
+                    if size > 0:
+                        found.append({"path": path, "size": size, "mtime": mtime})
+                except OSError:
+                    continue
+    return sorted(found, key=lambda x: x["size"], reverse=True)
+
 
 
 def scan_docker() -> dict:

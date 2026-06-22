@@ -24,12 +24,36 @@ def move_to_trash(paths: list[str]) -> tuple[int, int]:
 
 
 def _osascript_trash(path: str) -> None:
-    script = f'tell application "Finder" to delete POSIX file "{path}"'
+    escaped = path.replace("\\", "\\\\").replace('"', '\\"')
+    script = f'tell application "Finder" to delete POSIX file "{escaped}"'
     result = subprocess.run(
         ["osascript", "-e", script], capture_output=True, timeout=10
     )
     if result.returncode != 0:
         raise RuntimeError(result.stderr.decode())
+
+
+def _clear_dir_contents(path: str) -> bool:
+    """Delete each item inside a directory when the dir itself can't be trashed."""
+    cleared = False
+    try:
+        entries = list(os.scandir(path))
+    except OSError:
+        return False
+    for entry in entries:
+        try:
+            send2trash(entry.path)
+            cleared = True
+        except Exception:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    shutil.rmtree(entry.path, ignore_errors=True)
+                else:
+                    os.remove(entry.path)
+                cleared = True
+            except Exception:
+                pass
+    return cleared
 
 
 def clean_caches(dirs: list[str]) -> tuple[int, int]:
@@ -40,10 +64,15 @@ def clean_caches(dirs: list[str]) -> tuple[int, int]:
         if not os.path.isdir(expanded):
             continue
         try:
-            shutil.rmtree(expanded)
+            send2trash(expanded)
             ok += 1
         except Exception:
-            fail += 1
+            # Dir itself is protected (e.g. ~/Library/Caches in use by macOS)
+            # — clear its contents instead
+            if _clear_dir_contents(expanded):
+                ok += 1
+            else:
+                fail += 1
     return ok, fail
 
 
@@ -55,7 +84,34 @@ def clean_node_modules(items: list[dict]) -> tuple[int, int]:
         if not os.path.isdir(path):
             continue
         try:
-            shutil.rmtree(path)
+            send2trash(path)
+            ok += 1
+        except Exception:
+            fail += 1
+    return ok, fail
+
+
+def empty_trash() -> dict:
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", 'tell application "Finder" to empty trash'],
+            capture_output=True, text=True, timeout=60
+        )
+        return {"success": result.returncode == 0}
+    except Exception:
+        return {"success": False}
+
+
+
+def delete_permanent(paths: list[str]) -> tuple[int, int]:
+    """Permanently delete files/dirs (used for language files inside app bundles)."""
+    ok, fail = 0, 0
+    for path in paths:
+        try:
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+            elif os.path.isfile(path):
+                os.remove(path)
             ok += 1
         except Exception:
             fail += 1
@@ -65,7 +121,7 @@ def clean_node_modules(items: list[dict]) -> tuple[int, int]:
 def prune_docker() -> dict:
     try:
         result = subprocess.run(
-            ["docker", "system", "prune", "-f", "--volumes"],
+            ["docker", "system", "prune", "-f"],
             capture_output=True, text=True, timeout=120
         )
         return {
