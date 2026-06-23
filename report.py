@@ -352,7 +352,7 @@ def _build_html(scan_result: dict, port: int = 0) -> str:
             name = _he(item["name"])
             path = _he(item.get("path", ""))
             rows += f"""<div class="file-row" data-path="{name}">
-              <input type="checkbox" class="cb" value="{name}" checked>
+              <input type="checkbox" class="cb" value="{name}">
               <div class="thumb-ph">🚀</div>
               <div class="file-info"><div class="file-name">{name}</div><div class="file-folder">{path}</div></div>
             </div>"""

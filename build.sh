@@ -16,7 +16,7 @@ IDENTITY=""      # e.g. "Developer ID Application: Jun Kim (ABC123XYZ)"
 
 source venv/bin/activate
 
-pyinstaller -y \
+pyinstaller -y --clean \
   --name Sweep \
   --windowed \
   --onedir \
@@ -44,6 +44,7 @@ add_key NSDownloadsFolderUsageDescription  "Sweep scans your Downloads folder fo
 add_key NSDocumentsFolderUsageDescription  "Sweep scans Documents for recordings and large files."
 add_key NSPicturesFolderUsageDescription   "Sweep scans your Photos library for blurry and duplicate images."
 add_key NSRemovableVolumesUsageDescription "Sweep scans removable drives for junk files."
+add_key NSAppleEventsUsageDescription      "Sweep uses System Events to read and manage your login items."
 
 VERSION=$(python -c "from version import __version__; print(__version__)")
 DMG="dist/Sweep-${VERSION}.dmg"
@@ -83,7 +84,9 @@ if [ "$NOTARIZE" = true ]; then
 
 else
   # ── Ad-hoc signed build (for local testing only) ─────────────────────────
-  codesign --force --deep --sign - "dist/Sweep.app"
+  codesign --force --deep --options runtime \
+    --entitlements entitlements.plist \
+    --sign - "dist/Sweep.app"
 
   rm -f "$DMG"
   hdiutil create \
