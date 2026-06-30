@@ -40,21 +40,13 @@ Because Sweep is free and open-source (not sold through the App Store), macOS wi
 
 **Step 1** — Open the DMG and drag **Sweep** into the **Applications** folder
 
-**Step 2** — Double-click Sweep in Applications. You'll see this warning — click **Done**
-
-> *(screenshot: "Sweep" Not Opened dialog)*
+**Step 2** — Double-click Sweep in Applications. You'll see a warning — click **Done**
 
 **Step 3** — Open **System Settings** → **Privacy & Security**
 
-> *(screenshot: System Settings → Privacy & Security)*
-
 **Step 4** — Scroll down until you see **"Sweep was blocked"** → click **Open Anyway**
 
-> *(screenshot: Open Anyway button)*
-
 **Step 5** — Click **Open** in the final dialog
-
-> *(screenshot: Open confirmation dialog)*
 
 That's it — you only need to do this once. Sweep opens normally every time after that.
 
