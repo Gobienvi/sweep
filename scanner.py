@@ -424,23 +424,28 @@ def scan_mail_attachments() -> list[dict]:
 
 
 def scan_login_items() -> list[dict]:
-    """Return apps that launch automatically at login via AppleScript."""
+    """Return apps that launch automatically at login.
+    Uses NSAppleScript (in-process) so TCC permission is granted to Sweep.app,
+    not to osascript subprocess.
+    """
     try:
-        r = subprocess.run(
-            ["osascript",
-             "-e", 'tell application "System Events"',
-             "-e", 'set output to ""',
-             "-e", 'repeat with li in login items',
-             "-e", 'set output to output & (name of li) & "\t" & (path of li) & "\n"',
-             "-e", 'end repeat',
-             "-e", 'return output',
-             "-e", 'end tell'],
-            capture_output=True, text=True, timeout=10
-        )
-        if r.returncode != 0:
+        from Foundation import NSAppleScript
+        source = """
+            tell application "System Events"
+                set output to ""
+                repeat with li in login items
+                    set output to output & (name of li) & "\t" & (path of li) & "\n"
+                end repeat
+                return output
+            end tell
+        """
+        script = NSAppleScript.alloc().initWithSource_(source)
+        result, error = script.executeAndReturnError_(None)
+        if error:
             return []
+        text = result.stringValue() or ""
         items = []
-        for line in r.stdout.strip().splitlines():
+        for line in text.strip().splitlines():
             if "\t" in line:
                 name, path = line.split("\t", 1)
                 name = name.strip()

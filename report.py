@@ -588,6 +588,11 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-s
                      margin: 0 auto 20px; font-size: 32px; }}
 .clean-screen h2 {{ font-size: 26px; font-weight: 800; color: var(--text); margin-bottom: 8px; }}
 .clean-screen p {{ font-size: 15px; color: var(--text-2); margin-bottom: 24px; }}
+@keyframes hint-pulse {{
+  0%, 100% {{ opacity: 1; }}
+  50% {{ opacity: .65; }}
+}}
+#rescan-btn.hint {{ animation: hint-pulse 1s ease-in-out 3; }}
 .clean-screen .rescan-btn {{ background: var(--accent); color: #fff; border: none;
   border-radius: 12px; padding: 12px 28px; font-size: 15px; font-weight: 700;
   cursor: pointer; transition: opacity .15s; }}
@@ -1119,14 +1124,18 @@ document.addEventListener('change', e => {{
 
 // ── Clean actions ─────────────────────────────────────────
 function hintRescan() {{
-  setTimeout(rescan, 1200);
+  const btn = document.getElementById('rescan-btn');
+  if (!btn) return;
+  btn.classList.add('hint');
+  btn.style.background = 'var(--accent)';
+  btn.style.color = '#fff';
 }}
 async function cleanFiles(secId, endpoint) {{
   const paths = getChecked(secId);
   if (!paths.length) {{ toast('Nothing selected', false); return; }}
   const r = await post(endpoint, {{paths}});
   markCleaned(secId);
-  toast(`Moved ${{r.ok}} item(s) to Bin${{r.fail ? ' · ' + r.fail + ' failed' : ''}} — rescanning…`);
+  toast(`Moved ${{r.ok}} item(s) to Bin${{r.fail ? ' · ' + r.fail + ' failed' : ''}}`);
   hintRescan();
 }}
 async function cleanCaches() {{
@@ -1134,7 +1143,7 @@ async function cleanCaches() {{
   if (!dirs.length) {{ toast('Nothing selected', false); return; }}
   const r = await post('/clean/caches', {{dirs}});
   markCleaned('cache');
-  toast(`Cleared ${{r.ok}} cache dir(s)${{r.fail ? ' · ' + r.fail + ' failed' : ''}} — rescanning…`);
+  toast(`Cleared ${{r.ok}} cache dir(s)${{r.fail ? ' · ' + r.fail + ' failed' : ''}}`);
   hintRescan();
 }}
 async function cleanNodeModules() {{
@@ -1142,18 +1151,18 @@ async function cleanNodeModules() {{
   if (!paths.length) {{ toast('Nothing selected', false); return; }}
   const r = await post('/clean/node_modules', {{paths}});
   markCleaned('nm');
-  toast(`Moved ${{r.ok}} node_modules folder(s) to Bin — rescanning…`);
+  toast(`Moved ${{r.ok}} node_modules folder(s) to Bin`);
   hintRescan();
 }}
 async function cleanBrowserCaches() {{
   const r = await post('/clean/caches', {{dirs: DATA.browser_dirs}});
-  toast(`Moved ${{r.ok}} browser cache(s) to Bin — rescanning…`);
+  toast(`Moved ${{r.ok}} browser cache(s) to Bin`);
   hintRescan();
 }}
 async function pruneDocker() {{
   toast('Running docker system prune…');
   const r = await post('/clean/docker', {{}});
-  toast(r.success ? 'Docker pruned ✓ — rescanning…' : 'Docker prune failed', r.success);
+  toast(r.success ? 'Docker pruned ✓' : 'Docker prune failed', r.success);
   if (r.success) hintRescan();
 }}
 async function cleanLangFiles() {{
@@ -1161,7 +1170,7 @@ async function cleanLangFiles() {{
   if (!paths.length) {{ toast('Nothing selected', false); return; }}
   const r = await post('/clean/lang', {{paths}});
   markCleaned('lang');
-  toast(`Deleted ${{r.ok}} language pack(s)${{r.fail ? ' · ' + r.fail + ' failed' : ''}} — rescanning…`);
+  toast(`Deleted ${{r.ok}} language pack(s)${{r.fail ? ' · ' + r.fail + ' failed' : ''}}`);
   hintRescan();
 }}
 async function cleanLoginItems() {{
@@ -1174,7 +1183,7 @@ async function cleanLoginItems() {{
 async function emptyTrash() {{
   toast('Emptying Trash…');
   const r = await post('/clean/trash', {{}});
-  toast(r.success ? 'Trash emptied ✓ — rescanning…' : 'Could not empty Trash', r.success);
+  toast(r.success ? 'Trash emptied ✓' : 'Could not empty Trash', r.success);
   if (r.success) hintRescan();
 }}
 function showConfirm(title, body, onOk) {{

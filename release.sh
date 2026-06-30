@@ -10,6 +10,9 @@ echo "▶ Building ${APP_NAME} v${VERSION}..."
 
 # ── 1. update version.py ──────────────────────────────────────────────────────
 sed -i '' "s/__version__ = \".*\"/__version__ = \"${VERSION}\"/" version.py
+git add version.py
+git commit -m "chore: bump version to ${VERSION}"
+git push
 
 # ── 2. activate venv and build .app ──────────────────────────────────────────
 source venv/bin/activate

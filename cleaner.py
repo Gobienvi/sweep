@@ -114,17 +114,19 @@ def delete_permanent(paths: list[str]) -> tuple[int, int]:
 
 def remove_login_items(names: list[str]) -> tuple[int, int]:
     ok, fail = 0, 0
+    try:
+        from Foundation import NSAppleScript
+    except ImportError:
+        return 0, len(names)
     for name in names:
         escaped = name.replace("\\", "\\\\").replace('"', '\\"')
-        script = f'tell application "System Events" to delete login item "{escaped}"'
-        try:
-            r = subprocess.run(["osascript", "-e", script], capture_output=True, timeout=10)
-            if r.returncode == 0:
-                ok += 1
-            else:
-                fail += 1
-        except Exception:
+        source = f'tell application "System Events" to delete login item "{escaped}"'
+        script = NSAppleScript.alloc().initWithSource_(source)
+        _, error = script.executeAndReturnError_(None)
+        if error:
             fail += 1
+        else:
+            ok += 1
     return ok, fail
 
 
