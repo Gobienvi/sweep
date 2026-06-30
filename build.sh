@@ -61,12 +61,17 @@ if [ "$NOTARIZE" = true ]; then
   echo "Signature verified ✓"
 
   echo "Creating DMG…"
+  rm -rf dist/dmg-staging
+  mkdir dist/dmg-staging
+  cp -r "dist/Sweep.app" dist/dmg-staging/
+  ln -s /Applications dist/dmg-staging/Applications
   rm -f "$DMG"
   hdiutil create \
     -volname "Sweep" \
-    -srcfolder "dist/Sweep.app" \
+    -srcfolder dist/dmg-staging \
     -ov -format UDZO \
     "$DMG"
+  rm -rf dist/dmg-staging
 
   echo "Submitting to Apple notarization service…"
   xcrun notarytool submit "$DMG" \
@@ -88,12 +93,17 @@ else
     --entitlements entitlements.plist \
     --sign - "dist/Sweep.app"
 
+  rm -rf dist/dmg-staging
+  mkdir dist/dmg-staging
+  cp -r "dist/Sweep.app" dist/dmg-staging/
+  ln -s /Applications dist/dmg-staging/Applications
   rm -f "$DMG"
   hdiutil create \
     -volname "Sweep" \
-    -srcfolder "dist/Sweep.app" \
+    -srcfolder dist/dmg-staging \
     -ov -format UDZO \
     "$DMG"
+  rm -rf dist/dmg-staging
 fi
 
 echo ""

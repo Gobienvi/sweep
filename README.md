@@ -34,25 +34,29 @@ No subscription. No upsell. Just a fast, native macOS app that lives in your men
 
 Requires macOS 13 or later (Apple Silicon + Intel).
 
-### First launch (important)
+### First launch — macOS security warning
 
-macOS will block the app because it's not signed by Apple. To open it:
+Because Sweep is free and open-source (not sold through the App Store), macOS will show a security warning the first time you open it. This is normal. Here's how to get past it:
 
-**Option 1 — right-click method:**
-1. Right-click `Sweep.app` → **Open**
-2. Click **Open** in the dialog
+**Step 1** — Open the DMG and drag **Sweep** into the **Applications** folder
 
-**Option 2 — System Settings:**
-1. Try to open Sweep (it will be blocked)
-2. Go to **System Settings → Privacy & Security**
-3. Scroll down → click **Open Anyway**
+**Step 2** — Double-click Sweep in Applications. You'll see this warning — click **Done**
 
-**Option 3 — terminal (fastest):**
-```bash
-xattr -d com.apple.quarantine /Applications/Sweep.app
-```
+> *(screenshot: "Sweep" Not Opened dialog)*
 
-You only need to do this once. macOS remembers after the first open.
+**Step 3** — Open **System Settings** → **Privacy & Security**
+
+> *(screenshot: System Settings → Privacy & Security)*
+
+**Step 4** — Scroll down until you see **"Sweep was blocked"** → click **Open Anyway**
+
+> *(screenshot: Open Anyway button)*
+
+**Step 5** — Click **Open** in the final dialog
+
+> *(screenshot: Open confirmation dialog)*
+
+That's it — you only need to do this once. Sweep opens normally every time after that.
 
 ---
 
