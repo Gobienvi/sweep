@@ -202,10 +202,18 @@ def _build_html(scan_result: dict, port: int = 0) -> str:
                   + trash["size"] + total_mail + total_xcode + total_ios
                   + total_large + total_downloads + total_lang)
     try:
-        disk_total = shutil.disk_usage("/").total
+        _disk = shutil.disk_usage("/")
+        disk_total, disk_used, disk_free = _disk.total, _disk.used, _disk.free
         junk_pct = min(99, max(1, int(total_junk / disk_total * 100))) if disk_total else 5
     except OSError:
+        disk_total = disk_used = disk_free = 0
         junk_pct = 5
+
+    reclaim_for_bar = min(total_junk, disk_used)
+    other_used = disk_used - reclaim_for_bar
+    def bar_pct(n): return (n / disk_total * 100) if disk_total else 0
+    other_used_pct = bar_pct(other_used)
+    reclaim_pct    = bar_pct(reclaim_for_bar)
 
     clean_state = total_junk < 50 * 1024 * 1024  # < 50 MB = effectively clean
 
@@ -451,6 +459,23 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-s
 .hero-pill .lbl {{ font-size: 11px; color: var(--text-2); font-weight: 500;
                     text-transform: uppercase; letter-spacing: .3px; }}
 
+/* ── Storage bar ── */
+.storage-widget {{ margin-top: 22px; }}
+.storage-label-row {{ display: flex; justify-content: space-between;
+                       font-size: 12px; font-weight: 600; color: var(--text-2); margin-bottom: 8px; }}
+.storage-bar {{ display: flex; height: 10px; border-radius: 99px; overflow: hidden;
+                 background: var(--bg); border: 1px solid var(--border); }}
+.storage-seg {{ height: 100%; transition: width .3s; }}
+.storage-seg-used {{ background: #8E8E93; }}
+.storage-seg-reclaim {{ background: var(--accent); }}
+.storage-legend {{ display: flex; gap: 18px; flex-wrap: wrap; margin-top: 10px; }}
+.legend-item {{ display: flex; align-items: center; gap: 6px;
+                 font-size: 12px; font-weight: 500; color: var(--text-2); }}
+.dot {{ width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }}
+.dot-used {{ background: #8E8E93; }}
+.dot-reclaim {{ background: var(--accent); }}
+.dot-free {{ background: var(--border); }}
+
 /* ── Dashboard grid ── */
 .dash-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
                gap: 12px; padding: 24px 40px; }}
@@ -614,6 +639,8 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-s
   .reveal-btn {{ border-color: rgba(255,255,255,.12); }}
   .hero-pill {{ background: rgba(255,255,255,.06); border-color: rgba(255,255,255,.1); }}
   .hero-pill .val {{ color: #F4F4F5; }}
+  .storage-bar {{ background: #000; }}
+  .dot-free {{ background: rgba(255,255,255,.18); }}
 }}
 </style>
 </head>
@@ -750,6 +777,22 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-s
         <div class="hero-pill">
           <div class="val">{sz(trash["size"])}</div>
           <div class="lbl">Trash</div>
+        </div>
+      </div>
+
+      <div class="storage-widget">
+        <div class="storage-label-row">
+          <span>{sz(disk_used)} of {sz(disk_total)} used</span>
+          <span>{sz(disk_free)} available</span>
+        </div>
+        <div class="storage-bar">
+          <div class="storage-seg storage-seg-used" style="width:{other_used_pct:.2f}%"></div>
+          <div class="storage-seg storage-seg-reclaim" style="width:{reclaim_pct:.2f}%"></div>
+        </div>
+        <div class="storage-legend">
+          <div class="legend-item"><span class="dot dot-used"></span>Used &middot; {sz(other_used)}</div>
+          <div class="legend-item"><span class="dot dot-reclaim"></span>Reclaimable &middot; {sz(reclaim_for_bar)}</div>
+          <div class="legend-item"><span class="dot dot-free"></span>Free &middot; {sz(disk_free)}</div>
         </div>
       </div>
     </div>
