@@ -11,40 +11,22 @@ echo "▶ Building ${APP_NAME} v${VERSION}..."
 # ── 1. update version.py ──────────────────────────────────────────────────────
 sed -i '' "s/__version__ = \".*\"/__version__ = \"${VERSION}\"/" version.py
 git add version.py
-git commit -m "chore: bump version to ${VERSION}"
+# skip the commit if version.py already had this version (otherwise set -e aborts)
+if ! git diff --cached --quiet version.py; then
+  git commit -m "chore: bump version to ${VERSION}"
+fi
 git push
 
 # ── 2. activate venv and build .app ──────────────────────────────────────────
 source venv/bin/activate
 bash build.sh
 
-# ── 3. create DMG ─────────────────────────────────────────────────────────────
-echo "▶ Creating DMG..."
-STAGING="staging_dmg"
-rm -rf "${STAGING}"
-mkdir "${STAGING}"
-
-# copy app and add Applications symlink
-cp -r "dist/${APP_NAME}.app" "${STAGING}/"
-ln -s /Applications "${STAGING}/Applications"
-
-# create writable DMG from staging folder
-hdiutil create \
-  -volname "${APP_NAME}" \
-  -srcfolder "${STAGING}" \
-  -ov -format UDRW \
-  -fs HFS+ \
-  "dist/${APP_NAME}_tmp.dmg" > /dev/null
-
-# convert to compressed read-only DMG
-hdiutil convert \
-  "dist/${APP_NAME}_tmp.dmg" \
-  -format UDZO \
-  -o "dist/${DMG_NAME}" > /dev/null
-
-rm -f "dist/${APP_NAME}_tmp.dmg"
-rm -rf "${STAGING}"
-
+# ── 3. DMG ────────────────────────────────────────────────────────────────────
+# build.sh already creates dist/${DMG_NAME} — just make sure it's there.
+if [ ! -f "dist/${DMG_NAME}" ]; then
+  echo "✗ dist/${DMG_NAME} not found — build.sh should have created it"
+  exit 1
+fi
 echo "✓ DMG ready: dist/${DMG_NAME}"
 
 # ── 4. publish to GitHub (optional — needs gh CLI) ───────────────────────────
