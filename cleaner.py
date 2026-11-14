@@ -35,19 +35,19 @@ def _osascript_trash(path: str) -> None:
 
 
 def _clear_dir_contents(path: str) -> bool:
-    """Move each item inside a directory to Trash when the dir itself can't be trashed."""
-    cleared = False
+    """Move each item inside a directory to Trash when the dir itself can't be trashed.
+    Returns True only if every item was moved — a partial clear is not a success."""
     try:
         entries = list(os.scandir(path))
     except OSError:
         return False
+    all_cleared = True
     for entry in entries:
         try:
             send2trash(entry.path)
-            cleared = True
         except Exception:
-            pass
-    return cleared
+            all_cleared = False
+    return all_cleared
 
 
 def clean_caches(dirs: list[str]) -> tuple[int, int]:

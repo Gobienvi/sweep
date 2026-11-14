@@ -1,4 +1,5 @@
 import json
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
@@ -58,6 +59,25 @@ def clear_scan_trigger() -> None:
 def wait_for_scan_trigger(timeout: float = 3600) -> bool:
     """Block until browser requests a rescan. Returns True if triggered."""
     return _scan_trigger.wait(timeout=timeout)
+
+
+def _per_item(clean_fn, items: list, paths: bool = True) -> dict:
+    """Run a batch cleaner one item at a time so the client learns exactly which
+    items failed. Paths that no longer exist are reported in `gone` (e.g. already
+    removed via another section), so the client doesn't count their bytes twice."""
+    ok = 0
+    failed = []
+    gone = []
+    for item in items:
+        if paths and not os.path.lexists(item):
+            gone.append(item)
+            continue
+        _, fail = clean_fn([item])
+        if fail:
+            failed.append(item)
+        else:
+            ok += 1
+    return {"ok": ok, "fail": len(failed), "failed": failed, "gone": gone}
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -141,20 +161,22 @@ class _Handler(BaseHTTPRequestHandler):
             path = urlparse(self.path).path
 
             if path == "/clean/files":
-                ok, fail = cleaner.move_to_trash(body.get("paths", []))
-                if ok: notifier.mark_cleaned()
-                self._json({"ok": ok, "fail": fail})
+                res = _per_item(cleaner.move_to_trash, body.get("paths", []))
+                if res["ok"]: notifier.mark_cleaned()
+                self._json(res)
 
             elif path == "/clean/caches":
-                ok, fail = cleaner.clean_caches(body.get("dirs", []))
-                if ok: notifier.mark_cleaned()
-                self._json({"ok": ok, "fail": fail})
+                res = _per_item(cleaner.clean_caches, body.get("dirs", []))
+                if res["ok"]: notifier.mark_cleaned()
+                self._json(res)
 
             elif path == "/clean/node_modules":
-                items = [{"path": p} for p in body.get("paths", [])]
-                ok, fail = cleaner.clean_node_modules(items)
-                if ok: notifier.mark_cleaned()
-                self._json({"ok": ok, "fail": fail})
+                res = _per_item(
+                    lambda ps: cleaner.clean_node_modules([{"path": p} for p in ps]),
+                    body.get("paths", []),
+                )
+                if res["ok"]: notifier.mark_cleaned()
+                self._json(res)
 
             elif path == "/clean/docker":
                 result = cleaner.prune_docker()
@@ -167,14 +189,12 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(result)
 
             elif path == "/clean/login_items":
-                names = body.get("names", [])
-                ok, fail = cleaner.remove_login_items(names)
-                self._json({"ok": ok, "fail": fail})
+                self._json(_per_item(cleaner.remove_login_items, body.get("names", []), paths=False))
 
             elif path == "/clean/lang":
-                ok, fail = cleaner.delete_permanent(body.get("paths", []))
-                if ok: notifier.mark_cleaned()
-                self._json({"ok": ok, "fail": fail})
+                res = _per_item(cleaner.delete_permanent, body.get("paths", []))
+                if res["ok"]: notifier.mark_cleaned()
+                self._json(res)
 
             elif path == "/reveal":
                 import subprocess as _sp
@@ -182,6 +202,14 @@ class _Handler(BaseHTTPRequestHandler):
                 if p:
                     _sp.run(["open", "-R", p], capture_output=True)
                 self._json({"ok": True})
+
+            elif path == "/open_full_disk_access":
+                import subprocess as _sp
+                r = _sp.run(
+                    ["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"],
+                    capture_output=True,
+                )
+                self._json({"ok": r.returncode == 0})
 
             elif path == "/rescan":
                 _state["report_html"] = None

@@ -167,6 +167,18 @@ def scan_cache_size(dirs: list[str] | None = None) -> dict[str, int]:
 
 # ── new scanners ──────────────────────────────────────────────────────────────
 
+def browser_cache_dirs(browser: str) -> list[str]:
+    """Real on-disk cache folders for a browser. Firefox only ever returns the
+    per-profile cache2 dirs — never the Profiles folder itself."""
+    path = BROWSER_CACHES.get(browser)
+    if not path:
+        return []
+    expanded = os.path.expanduser(path)
+    if browser == "Firefox":
+        return [m for m in glob.glob(os.path.join(expanded, "*.default*", "cache2")) if os.path.isdir(m)]
+    return [expanded] if os.path.isdir(expanded) else []
+
+
 def scan_browser_caches() -> dict[str, int]:
     result: dict[str, int] = {}
     for browser, path in BROWSER_CACHES.items():
@@ -457,6 +469,80 @@ def scan_login_items() -> list[dict]:
         return items
     except Exception:
         return []
+
+
+def _du_bytes(path: str, timeout: int = 60) -> tuple[int, str | None]:
+    """Returns (size_bytes, issue). issue is None when fully measured, otherwise
+    "denied" (some contents unreadable — size is partial), "timeout" or "error"."""
+    if not os.path.exists(path):
+        return 0, None
+    try:
+        result = subprocess.run(["du", "-sk", path], capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return 0, "timeout"
+    except OSError:
+        return 0, "error"
+    issue = None
+    if result.returncode != 0:
+        # du exits non-zero if any subfolder is unreadable but still prints a
+        # total for what it could read — keep that partial total.
+        issue = "denied" if "operation not permitted" in result.stderr.lower() else "error"
+    try:
+        return int(result.stdout.split()[0]) * 1024, issue
+    except (ValueError, IndexError):
+        return 0, issue or "error"
+
+
+def scan_storage_breakdown() -> dict:
+    """Approximate disk usage by category, mirroring macOS Settings > Storage.
+    `incomplete` lists categories that couldn't be fully measured, so the UI can
+    say so instead of silently folding their space into System Data."""
+    incomplete: list[str] = []
+
+    def measure(label: str, paths: list[str]) -> int:
+        total = 0
+        had_issue = False
+        for p in paths:
+            size, issue = _du_bytes(p)
+            total += size
+            had_issue = had_issue or issue is not None
+        if had_issue:
+            incomplete.append(label)
+        return total
+
+    app_dirs = [p for p in ("/Applications", os.path.expanduser("~/Applications")) if os.path.isdir(p)]
+    applications = measure("Applications", app_dirs)
+    documents = measure("Documents", [os.path.expanduser("~/Documents")])
+
+    pictures = os.path.expanduser("~/Pictures")
+    photos = 0
+    photos_access_denied = False
+    photos_issue = False
+    if os.path.isdir(pictures):
+        try:
+            for entry in os.scandir(pictures):
+                if entry.name.endswith(".photoslibrary"):
+                    size, issue = _du_bytes(entry.path)
+                    photos += size
+                    if issue == "denied":
+                        photos_access_denied = True
+                    elif issue:
+                        photos_issue = True
+        except OSError:
+            photos_issue = True
+    if photos_issue:
+        incomplete.append("Photos")
+
+    music = measure("Music Creation", [os.path.expanduser("~/Music")])
+
+    return {
+        "applications": applications,
+        "documents": documents,
+        "photos": photos,
+        "music": music,
+        "photos_access_denied": photos_access_denied,
+        "incomplete": incomplete,
+    }
 
 
 def scan_docker() -> dict:

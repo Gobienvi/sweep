@@ -9,6 +9,7 @@ from io import BytesIO
 
 from PIL import Image
 
+import scanner
 from version import __version__
 
 
@@ -22,6 +23,17 @@ def _format_bytes(n: int) -> str:
 
 def _fmt_date(ts: float) -> str:
     return time.strftime("%Y-%m-%d", time.localtime(ts))
+
+
+def _volume_name() -> str:
+    try:
+        r = subprocess.run(["diskutil", "info", "/"], capture_output=True, text=True, timeout=5)
+        for line in r.stdout.splitlines():
+            if line.strip().startswith("Volume Name:"):
+                return line.split(":", 1)[1].strip()
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    return "Macintosh HD"
 
 
 def _thumb_b64(path: str) -> str | None:
@@ -180,6 +192,7 @@ def _build_html(scan_result: dict, port: int = 0) -> str:
     recordings     = scan_result.get("recordings", [])
     docker         = scan_result.get("docker", {})
     login_items    = scan_result.get("login_items", [])
+    storage_breakdown = scan_result.get("storage_breakdown", {})
 
     def sz(n): return _format_bytes(n)
 
@@ -190,6 +203,16 @@ def _build_html(scan_result: dict, port: int = 0) -> str:
     total_large        = sum(i["size"] for i in large_files)
     total_ios          = sum(i["size"] for i in ios_backups)
     total_xcode        = sum(i["size"] for i in xcode_archives)
+
+    def _paths_bytes(paths):
+        total = 0
+        for p in paths:
+            try: total += os.path.getsize(p)
+            except OSError: pass
+        return total
+    total_screenshots = _paths_bytes(screenshots)
+    total_bad         = _paths_bytes(bad_photos)
+    total_dupes       = _paths_bytes(duplicates)
 
     total_downloads  = sum(f["size"] for f in downloads)
     total_lang       = sum(f["size"] for f in language_files)
@@ -209,11 +232,27 @@ def _build_html(scan_result: dict, port: int = 0) -> str:
         disk_total = disk_used = disk_free = 0
         junk_pct = 5
 
-    reclaim_for_bar = min(total_junk, disk_used)
-    other_used = disk_used - reclaim_for_bar
+    volume_name = _volume_name()
+    st_applications = storage_breakdown.get("applications", 0)
+    st_documents    = storage_breakdown.get("documents", 0)
+    st_photos       = storage_breakdown.get("photos", 0)
+    st_music        = storage_breakdown.get("music", 0)
+    st_photos_denied = storage_breakdown.get("photos_access_denied", False)
+    st_incomplete    = storage_breakdown.get("incomplete", [])
+    st_system       = max(0, disk_used - (st_applications + st_documents + st_photos + st_music))
+
     def bar_pct(n): return (n / disk_total * 100) if disk_total else 0
-    other_used_pct = bar_pct(other_used)
-    reclaim_pct    = bar_pct(reclaim_for_bar)
+    st_used_pct  = bar_pct(disk_used)
+    st_free_pct  = bar_pct(disk_free)
+
+    # segment widths are relative to the used-bar's own box (which is itself
+    # sized to disk_used via flex-grow above), so divide by disk_used, not disk_total
+    def seg_pct(n): return (n / disk_used * 100) if disk_used else 0
+    st_apps_pct   = seg_pct(st_applications)
+    st_docs_pct   = seg_pct(st_documents)
+    st_photos_pct = seg_pct(st_photos)
+    st_music_pct  = seg_pct(st_music)
+    st_system_pct = seg_pct(st_system)
 
     clean_state = total_junk < 50 * 1024 * 1024  # < 50 MB = effectively clean
 
@@ -231,6 +270,12 @@ def _build_html(scan_result: dict, port: int = 0) -> str:
     def _he(s: str) -> str:
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
+    incomplete_note = (
+        f'<div class="storage-fda-note"><span>Couldn&#39;t fully measure {_he(", ".join(st_incomplete))} '
+        f'&mdash; what wasn&#39;t measured is counted as System Data.</span></div>'
+        if st_incomplete else ""
+    )
+
     def file_rows(paths, checkable=True, thumb_limit=50, default_checked=True, reveal=False):
         if not paths:
             return "<div class='empty-state'><span>✓</span><p>Nothing found</p></div>"
@@ -238,13 +283,16 @@ def _build_html(scan_result: dict, port: int = 0) -> str:
         for i, p in enumerate(paths):
             name = os.path.basename(p)
             folder = os.path.dirname(p).replace(os.path.expanduser("~"), "~")
-            try: size = sz(os.path.getsize(p))
-            except OSError: size = "—"
+            try:
+                nbytes = os.path.getsize(p)
+                size = sz(nbytes)
+            except OSError:
+                nbytes, size = 0, "—"
             safe_p = _he(p)
             cb = f'<input type="checkbox" class="cb" value="{safe_p}" {"checked" if default_checked else ""}>' if checkable else ""
             thumb = thumb_tag(p) if i < thumb_limit else f'<div class="thumb-ph">📄</div>'
             reveal_btn = f'<button class="reveal-btn" onclick="revealInFinder(this.dataset.path)" data-path="{safe_p}">Show in Finder</button>' if reveal else ""
-            rows += f"""<div class="file-row" data-path="{safe_p}">
+            rows += f"""<div class="file-row" data-path="{safe_p}" data-size="{nbytes}">
               {cb}{thumb}
               <div class="file-info"><div class="file-name">{_he(name)}</div><div class="file-folder">{_he(folder)}</div></div>
               <div class="file-size">{size}</div>{reveal_btn}
@@ -263,7 +311,7 @@ def _build_html(scan_result: dict, port: int = 0) -> str:
             safe_p = _he(p)
             date = f'<div class="file-size" style="width:100px">{_fmt_date(item["mtime"])}</div>' if show_date else ""
             cb = f'<input type="checkbox" class="cb" value="{safe_p}" checked>' if checkable else ""
-            rows += f"""<div class="file-row" data-path="{safe_p}">
+            rows += f"""<div class="file-row" data-path="{safe_p}" data-size="{int(item["size"])}">
               {cb}<div class="thumb-ph">📁</div>
               <div class="file-info"><div class="file-name">{_he(name)}</div><div class="file-folder">{_he(folder)}</div></div>
               {date}<div class="file-size">{size}</div>
@@ -275,9 +323,10 @@ def _build_html(scan_result: dict, port: int = 0) -> str:
             return "<div class='empty-state'><span>✓</span><p>Nothing found</p></div>"
         rows = ""
         for d, s in sizes.items():
-            short = d.replace(os.path.expanduser("~"), "~")
-            rows += f"""<div class="file-row" data-path="{d}">
-              <input type="checkbox" class="cb" value="{d}" checked>
+            short = _he(d.replace(os.path.expanduser("~"), "~"))
+            safe_d = _he(d)
+            rows += f"""<div class="file-row" data-path="{safe_d}" data-size="{int(s)}">
+              <input type="checkbox" class="cb" value="{safe_d}" checked>
               <div class="thumb-ph">🗑️</div>
               <div class="file-info"><div class="file-name" style="font-size:13px">{short}</div></div>
               <div class="file-size">{sz(s)}</div>
@@ -290,9 +339,9 @@ def _build_html(scan_result: dict, port: int = 0) -> str:
         icons = {"Chrome": "🌐", "Safari": "🧭", "Arc": "🌈", "Firefox": "🦊", "Brave": "🦁", "Edge": "🔷"}
         rows = ""
         for browser, size in caches.items():
-            rows += f"""<div class="file-row">
+            rows += f"""<div class="file-row" data-browser="{_he(browser)}" data-size="{int(size)}">
               <div class="thumb-ph">{icons.get(browser, '🌐')}</div>
-              <div class="file-info"><div class="file-name">{browser}</div></div>
+              <div class="file-info"><div class="file-name">{_he(browser)}</div></div>
               <div class="file-size">{sz(size)}</div>
             </div>"""
         return rows
@@ -315,9 +364,10 @@ def _build_html(scan_result: dict, port: int = 0) -> str:
                 badge = f'<span class="age-badge age-old">{age}d ago</span>'
             thumb = thumb_tag(p) if i < 50 else f'<div class="thumb-ph">📄</div>'
             checked = "" if age <= 7 else "checked"
-            rows += f"""<div class="file-row" data-path="{p}">
-              <input type="checkbox" class="cb" value="{p}" {checked}>{thumb}
-              <div class="file-info"><div class="file-name">{name}</div><div class="file-folder">{folder}</div></div>
+            safe_p = _he(p)
+            rows += f"""<div class="file-row" data-path="{safe_p}" data-size="{int(item["size"])}">
+              <input type="checkbox" class="cb" value="{safe_p}" {checked}>{thumb}
+              <div class="file-info"><div class="file-name">{_he(name)}</div><div class="file-folder">{_he(folder)}</div></div>
               {badge}<div class="file-size">{size}</div>
             </div>"""
         return rows
@@ -327,11 +377,11 @@ def _build_html(scan_result: dict, port: int = 0) -> str:
             return "<div class='empty-state'><span>✓</span><p>No unused language files found</p></div>"
         rows = ""
         for item in items:
-            p = item["path"]
-            rows += f"""<div class="file-row" data-path="{p}">
-              <input type="checkbox" class="cb" value="{p}" checked>
+            safe_p = _he(item["path"])
+            rows += f"""<div class="file-row" data-path="{safe_p}" data-size="{int(item["size"])}">
+              <input type="checkbox" class="cb" value="{safe_p}" checked>
               <div class="thumb-ph">🌍</div>
-              <div class="file-info"><div class="file-name">{item["lang"]}</div><div class="file-folder">{item["app"]}</div></div>
+              <div class="file-info"><div class="file-name">{_he(item["lang"])}</div><div class="file-folder">{_he(item["app"])}</div></div>
               <div class="file-size">{sz(item["size"])}</div>
             </div>"""
         return rows
@@ -344,10 +394,11 @@ def _build_html(scan_result: dict, port: int = 0) -> str:
             p = item["path"]
             name = os.path.basename(p)
             folder = os.path.dirname(p).replace(os.path.expanduser("~"), "~")
-            rows += f"""<div class="file-row" data-path="{p}">
-              <input type="checkbox" class="cb" value="{p}" checked>
+            safe_p = _he(p)
+            rows += f"""<div class="file-row" data-path="{safe_p}" data-size="{int(item["size"])}">
+              <input type="checkbox" class="cb" value="{safe_p}" checked>
               <div class="thumb-ph">📎</div>
-              <div class="file-info"><div class="file-name">{name}</div><div class="file-folder">{folder}</div></div>
+              <div class="file-info"><div class="file-name">{_he(name)}</div><div class="file-folder">{_he(folder)}</div></div>
               <div class="file-size">{sz(item["size"])}</div>
             </div>"""
         return rows
@@ -359,7 +410,7 @@ def _build_html(scan_result: dict, port: int = 0) -> str:
         for item in items:
             name = _he(item["name"])
             path = _he(item.get("path", ""))
-            rows += f"""<div class="file-row" data-path="{name}">
+            rows += f"""<div class="file-row" data-path="{name}" data-size="0">
               <input type="checkbox" class="cb" value="{name}">
               <div class="thumb-ph">🚀</div>
               <div class="file-info"><div class="file-name">{name}</div><div class="file-folder">{path}</div></div>
@@ -372,7 +423,7 @@ def _build_html(scan_result: dict, port: int = 0) -> str:
         "duplicates":     duplicates,
         "downloads":      [f["path"] for f in downloads],
         "cache_dirs":     list(cache_sizes.keys()),
-        "browser_dirs":   list(browser_caches.keys()),
+        "browser_dirs":   {b: scanner.browser_cache_dirs(b) for b in browser_caches},
         "node_modules":   [i["path"] for i in node_modules],
         "ios_backups":    [i["path"] for i in ios_backups],
         "xcode_archives": [i["path"] for i in xcode_archives],
@@ -382,6 +433,24 @@ def _build_html(scan_result: dict, port: int = 0) -> str:
         "mail_attachments": [f["path"] for f in mail_attachments],
         "login_items":    [i["name"] for i in login_items],
     }).replace("</", "<\\/")
+
+    lang_count = len(language_files)
+    initial_state = json.dumps({
+        "screenshots": {"bytes": total_screenshots, "count": len(screenshots)},
+        "bad":         {"bytes": total_bad,         "count": len(bad_photos)},
+        "dupes":       {"bytes": total_dupes,       "count": len(duplicates)},
+        "downloads":   {"bytes": total_downloads,   "count": len(downloads)},
+        "mail":        {"bytes": total_mail,        "count": len(mail_attachments)},
+        "rec":         {"bytes": total_recordings,  "count": len(recordings)},
+        "ios":         {"bytes": total_ios,         "count": len(ios_backups)},
+        "xcode":       {"bytes": total_xcode,       "count": len(xcode_archives)},
+        "nm":          {"bytes": total_node_modules,"count": len(node_modules)},
+        "cache":       {"bytes": total_cache,       "count": len(cache_sizes)},
+        "browser":     {"bytes": total_browser,     "count": len(browser_caches)},
+        "lang":        {"bytes": total_lang,        "count": lang_count, "capped": lang_count >= 300},
+        "login":       {"bytes": 0,                 "count": len(login_items)},
+        "trash":       {"bytes": trash["size"],     "count": 1 if trash["size"] else 0},
+    })
 
     api = f"http://127.0.0.1:{port}" if port else ""
 
@@ -460,21 +529,31 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-s
                     text-transform: uppercase; letter-spacing: .3px; }}
 
 /* ── Storage bar ── */
-.storage-widget {{ margin-top: 22px; }}
-.storage-label-row {{ display: flex; justify-content: space-between;
-                       font-size: 12px; font-weight: 600; color: var(--text-2); margin-bottom: 8px; }}
-.storage-bar {{ display: flex; height: 10px; border-radius: 99px; overflow: hidden;
-                 background: var(--bg); border: 1px solid var(--border); }}
-.storage-seg {{ height: 100%; transition: width .3s; }}
-.storage-seg-used {{ background: #8E8E93; }}
-.storage-seg-reclaim {{ background: var(--accent); }}
-.storage-legend {{ display: flex; gap: 18px; flex-wrap: wrap; margin-top: 10px; }}
+.storage-card {{ margin-top: 22px; background: var(--bg); border: 1.5px solid var(--border);
+                  border-radius: var(--radius); padding: 18px 20px; }}
+.storage-card-header {{ display: flex; justify-content: space-between; align-items: baseline;
+                         margin-bottom: 12px; }}
+.storage-vol-name {{ font-size: 15px; font-weight: 700; color: var(--text); }}
+.storage-used-lbl {{ font-size: 13px; font-weight: 500; color: var(--text-2); }}
+.storage-bar-row {{ display: flex; gap: 6px; height: 32px; }}
+.storage-used-bar {{ display: flex; overflow: hidden; border-radius: 8px;
+                      flex-shrink: 0; flex-basis: 0; min-width: 4px; }}
+.storage-seg {{ height: 100%; }}
+.storage-free-bar {{ border-radius: 8px; background: #E4E4E7; color: var(--text);
+                      display: flex; align-items: center; justify-content: flex-end;
+                      padding-right: 14px; font-size: 13px; font-weight: 700;
+                      flex-shrink: 0; flex-basis: 0; white-space: nowrap; overflow: hidden; }}
+.storage-legend {{ display: flex; gap: 18px; flex-wrap: wrap; margin-top: 14px; }}
 .legend-item {{ display: flex; align-items: center; gap: 6px;
                  font-size: 12px; font-weight: 500; color: var(--text-2); }}
 .dot {{ width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }}
-.dot-used {{ background: #8E8E93; }}
-.dot-reclaim {{ background: var(--accent); }}
-.dot-free {{ background: var(--border); }}
+.storage-fda-note {{ display: flex; align-items: center; justify-content: space-between; gap: 12px;
+                      margin-top: 14px; padding: 10px 14px; border-radius: 10px;
+                      background: var(--accent-soft); font-size: 12px; color: var(--text-2); }}
+.fda-btn {{ background: var(--accent); color: #fff; border: none; border-radius: 7px;
+            padding: 6px 12px; font-size: 12px; font-weight: 700; cursor: pointer;
+            flex-shrink: 0; transition: opacity .15s; }}
+.fda-btn:hover {{ opacity: .88; }}
 
 /* ── Dashboard grid ── */
 .dash-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
@@ -639,8 +718,7 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-s
   .reveal-btn {{ border-color: rgba(255,255,255,.12); }}
   .hero-pill {{ background: rgba(255,255,255,.06); border-color: rgba(255,255,255,.1); }}
   .hero-pill .val {{ color: #F4F4F5; }}
-  .storage-bar {{ background: #000; }}
-  .dot-free {{ background: rgba(255,255,255,.18); }}
+  .storage-free-bar {{ background: #3A3A3C; color: #F4F4F5; }}
 }}
 </style>
 </head>
@@ -680,43 +758,43 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-s
   <div class="sidebar-section">Files</div>
   <div class="nav-item" onclick="nav('screenshots')">
     <span class="nav-icon"><i data-lucide="image"></i></span><span class="label">Screenshots</span>
-    <span class="badge {'has-items' if screenshots else ''}">{len(screenshots)}</span>
+    <span class="badge {'has-items' if screenshots else ''}" id="badge-screenshots">{len(screenshots)}</span>
   </div>
   <div class="nav-item" onclick="nav('bad')">
     <span class="nav-icon"><i data-lucide="eye-off"></i></span><span class="label">Blurry &amp; Dark</span>
-    <span class="badge {'has-items' if bad_photos else ''}">{len(bad_photos)}</span>
+    <span class="badge {'has-items' if bad_photos else ''}" id="badge-bad">{len(bad_photos)}</span>
   </div>
   <div class="nav-item" onclick="nav('dupes')">
     <span class="nav-icon"><i data-lucide="copy"></i></span><span class="label">Duplicates</span>
-    <span class="badge {'has-items' if duplicates else ''}">{len(duplicates)}</span>
+    <span class="badge {'has-items' if duplicates else ''}" id="badge-dupes">{len(duplicates)}</span>
   </div>
   <div class="nav-item" onclick="nav('downloads')">
     <span class="nav-icon"><i data-lucide="download"></i></span><span class="label">Downloads</span>
-    <span class="badge {'has-items' if downloads else ''}">{len(downloads)}</span>
+    <span class="badge {'has-items' if downloads else ''}" id="badge-downloads">{len(downloads)}</span>
   </div>
   <div class="nav-item" onclick="nav('mail')">
     <span class="nav-icon"><i data-lucide="paperclip"></i></span><span class="label">Mail Attachments</span>
-    <span class="badge {'has-items' if mail_attachments else ''}">{len(mail_attachments)}</span>
+    <span class="badge {'has-items' if mail_attachments else ''}" id="badge-mail">{len(mail_attachments)}</span>
   </div>
 
   <div class="sidebar-section">Caches</div>
   <div class="nav-item" onclick="nav('browser')">
     <span class="nav-icon"><i data-lucide="globe"></i></span><span class="label">Browser</span>
-    <span class="badge {'has-items' if browser_caches else ''}">{sz(total_browser) if total_browser else '0 B'}</span>
+    <span class="badge {'has-items' if browser_caches else ''}" id="badge-browser">{sz(total_browser) if total_browser else '0 B'}</span>
   </div>
   <div class="nav-item" onclick="nav('nm')">
     <span class="nav-icon"><i data-lucide="package"></i></span><span class="label">node_modules</span>
-    <span class="badge {'has-items' if node_modules else ''}">{sz(total_node_modules) if node_modules else '0 B'}</span>
+    <span class="badge {'has-items' if node_modules else ''}" id="badge-nm">{sz(total_node_modules) if node_modules else '0 B'}</span>
   </div>
   <div class="nav-item" onclick="nav('cache')">
     <span class="nav-icon"><i data-lucide="database"></i></span><span class="label">Dev Cache</span>
-    <span class="badge {'has-items' if cache_sizes else ''}">{sz(total_cache) if total_cache else '0 B'}</span>
+    <span class="badge {'has-items' if cache_sizes else ''}" id="badge-cache">{sz(total_cache) if total_cache else '0 B'}</span>
   </div>
 
   <div class="sidebar-section">System</div>
   <div class="nav-item" onclick="nav('login')">
     <span class="nav-icon"><i data-lucide="rocket"></i></span><span class="label">Login Items</span>
-    <span class="badge {'has-items' if login_items else ''}">{len(login_items)}</span>
+    <span class="badge {'has-items' if login_items else ''}" id="badge-login">{len(login_items)}</span>
   </div>
   <div class="nav-item" onclick="nav('docker')">
     <span class="nav-icon"><i data-lucide="box"></i></span><span class="label">Docker</span>
@@ -724,15 +802,15 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-s
   </div>
   <div class="nav-item" onclick="nav('ios')">
     <span class="nav-icon"><i data-lucide="smartphone"></i></span><span class="label">iOS Backups</span>
-    <span class="badge {'has-items' if ios_backups else ''}">{len(ios_backups)}</span>
+    <span class="badge {'has-items' if ios_backups else ''}" id="badge-ios">{len(ios_backups)}</span>
   </div>
   <div class="nav-item" onclick="nav('xcode')">
     <span class="nav-icon"><i data-lucide="cpu"></i></span><span class="label">Xcode</span>
-    <span class="badge {'has-items' if xcode_archives else ''}">{len(xcode_archives)}</span>
+    <span class="badge {'has-items' if xcode_archives else ''}" id="badge-xcode">{len(xcode_archives)}</span>
   </div>
   <div class="nav-item" onclick="nav('rec')">
     <span class="nav-icon"><i data-lucide="video"></i></span><span class="label">Recordings</span>
-    <span class="badge {'has-items' if recordings else ''}">{len(recordings)}</span>
+    <span class="badge {'has-items' if recordings else ''}" id="badge-rec">{len(recordings)}</span>
   </div>
   <div class="nav-item" onclick="nav('large')">
     <span class="nav-icon"><i data-lucide="hard-drive"></i></span><span class="label">Large Files</span>
@@ -740,11 +818,11 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-s
   </div>
   <div class="nav-item" onclick="nav('lang')">
     <span class="nav-icon"><i data-lucide="languages"></i></span><span class="label">Language Files</span>
-    <span class="badge {'has-items' if language_files else ''}">{'300+' if len(language_files) >= 300 else len(language_files)}</span>
+    <span class="badge {'has-items' if language_files else ''}" id="badge-lang">{'300+' if len(language_files) >= 300 else len(language_files)}</span>
   </div>
   <div class="nav-item" onclick="nav('trash')">
     <span class="nav-icon"><i data-lucide="trash-2"></i></span><span class="label">Trash</span>
-    <span class="badge {'has-items' if trash['size'] else ''}">{sz(trash['size']) if trash['size'] else '0 B'}</span>
+    <span class="badge {'has-items' if trash['size'] else ''}" id="badge-trash">{sz(trash['size']) if trash['size'] else '0 B'}</span>
   </div>
   <div class="sidebar-bottom">
     <button onclick="rescan()" id="rescan-btn" style="width:100%;padding:9px;border-radius:9px;border:none;
@@ -763,79 +841,89 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-s
   <div class="view active" id="view-dashboard">
     <div class="dash-hero">
       <div class="dash-eyebrow">Scan Complete</div>
-      <h1><em>{sz(recoverable)}</em> ready to clear</h1>
-      <p class="sub">{total_files} junk files found across your Mac</p>
+      <h1><em id="hero-recoverable">{sz(recoverable)}</em> ready to clear</h1>
+      <p class="sub"><span id="hero-files">{total_files}</span> junk files found across your Mac</p>
       <div class="hero-pills">
         <div class="hero-pill">
-          <div class="val">{sz(total_cache + total_browser)}</div>
+          <div class="val" id="pill-caches">{sz(total_cache + total_browser)}</div>
           <div class="lbl">Caches</div>
         </div>
         <div class="hero-pill">
-          <div class="val">{total_files}</div>
+          <div class="val" id="pill-files">{total_files}</div>
           <div class="lbl">Files</div>
         </div>
         <div class="hero-pill">
-          <div class="val">{sz(trash["size"])}</div>
+          <div class="val" id="pill-trash">{sz(trash["size"])}</div>
           <div class="lbl">Trash</div>
         </div>
       </div>
 
-      <div class="storage-widget">
-        <div class="storage-label-row">
-          <span>{sz(disk_used)} of {sz(disk_total)} used</span>
-          <span>{sz(disk_free)} available</span>
+      <div class="storage-card">
+        <div class="storage-card-header">
+          <span class="storage-vol-name">{_he(volume_name)}</span>
+          <span class="storage-used-lbl">{sz(disk_used)} of {sz(disk_total)} used</span>
         </div>
-        <div class="storage-bar">
-          <div class="storage-seg storage-seg-used" style="width:{other_used_pct:.2f}%"></div>
-          <div class="storage-seg storage-seg-reclaim" style="width:{reclaim_pct:.2f}%"></div>
+        <div class="storage-bar-row">
+          <div class="storage-used-bar" style="flex-grow:{st_used_pct:.4f}">
+            <div class="storage-seg" style="background:#FF453A; width:{st_apps_pct:.4f}%"></div>
+            <div class="storage-seg" style="background:#FF9F0A; width:{st_docs_pct:.4f}%"></div>
+            <div class="storage-seg" style="background:#FFD60A; width:{st_photos_pct:.4f}%"></div>
+            <div class="storage-seg" style="background:#30D158; width:{st_music_pct:.4f}%"></div>
+            <div class="storage-seg" style="background:#8E8E93; width:{st_system_pct:.4f}%"></div>
+          </div>
+          <div class="storage-free-bar" style="flex-grow:{st_free_pct:.4f}">{sz(disk_free)}</div>
         </div>
         <div class="storage-legend">
-          <div class="legend-item"><span class="dot dot-used"></span>Used &middot; {sz(other_used)}</div>
-          <div class="legend-item"><span class="dot dot-reclaim"></span>Reclaimable &middot; {sz(reclaim_for_bar)}</div>
-          <div class="legend-item"><span class="dot dot-free"></span>Free &middot; {sz(disk_free)}</div>
+          <div class="legend-item"><span class="dot" style="background:#FF453A"></span>Applications</div>
+          <div class="legend-item"><span class="dot" style="background:#FF9F0A"></span>Documents</div>
+          <div class="legend-item"><span class="dot" style="background:#FFD60A"></span>Photos</div>
+          <div class="legend-item"><span class="dot" style="background:#30D158"></span>Music Creation</div>
+          <div class="legend-item"><span class="dot" style="background:#8E8E93"></span>System Data</div>
         </div>
+        {'<div class="storage-fda-note"><span>Photos library size is hidden until Sweep has Full Disk Access.</span><button class="fda-btn" onclick="openFullDiskAccess()">Grant Access</button></div>' if st_photos_denied else ''}
+        {incomplete_note}
       </div>
     </div>
 
     {'<div class="clean-screen"><div class="clean-icon-wrap">✨</div><h2>Your Mac is spotless!</h2><p>Nothing significant found. Come back in a few days.</p><button class="rescan-btn" onclick="rescan()">Scan Again</button></div>' if clean_state else ''}
     <div class="dash-grid" {'style="display:none"' if clean_state else ''}>
-      <div class="dash-card {'zero' if not screenshots else ''}" onclick="nav('screenshots')">
+      <div class="dash-card {'zero' if not screenshots else ''}" id="card-screenshots" onclick="nav('screenshots')">
         <div class="card-icon-wrap"><i data-lucide="image"></i></div>
         <div class="card-count">{len(screenshots)}</div>
         <div class="card-label">Screenshots</div>
-        <div class="card-size">{sz(sum(os.path.getsize(p) for p in screenshots if os.path.exists(p)))}</div>
+        <div class="card-size">{sz(total_screenshots)}</div>
       </div>
-      <div class="dash-card {'zero' if not bad_photos else ''}" onclick="nav('bad')">
+      <div class="dash-card {'zero' if not bad_photos else ''}" id="card-bad" onclick="nav('bad')">
         <div class="card-icon-wrap"><i data-lucide="eye-off"></i></div>
         <div class="card-count">{len(bad_photos)}</div>
         <div class="card-label">Blurry &amp; Dark</div>
-        <div class="card-size">{sz(sum(os.path.getsize(p) for p in bad_photos if os.path.exists(p)))}</div>
+        <div class="card-size">{sz(total_bad)}</div>
       </div>
-      <div class="dash-card {'zero' if not duplicates else ''}" onclick="nav('dupes')">
+      <div class="dash-card {'zero' if not duplicates else ''}" id="card-dupes" onclick="nav('dupes')">
         <div class="card-icon-wrap"><i data-lucide="copy"></i></div>
         <div class="card-count">{len(duplicates)}</div>
         <div class="card-label">Duplicates</div>
-        <div class="card-size">{sz(sum(os.path.getsize(p) for p in duplicates if os.path.exists(p)))}</div>
+        <div class="card-size">{sz(total_dupes)}</div>
       </div>
-      <div class="dash-card {'zero' if not downloads else ''}" onclick="nav('downloads')">
+      <div class="dash-card {'zero' if not downloads else ''}" id="card-downloads" onclick="nav('downloads')">
         <div class="card-icon-wrap"><i data-lucide="download"></i></div>
         <div class="card-count">{len(downloads)}</div>
         <div class="card-label">Downloads</div>
         <div class="card-size">{sz(total_downloads)}</div>
       </div>
-      <div class="dash-card {'zero' if not total_cache else ''}" onclick="nav('cache')">
+      <div class="dash-card {'zero' if not total_cache else ''}" id="card-cache" onclick="nav('cache')">
         <div class="card-icon-wrap"><i data-lucide="database"></i></div>
         <div class="card-count">{sz(total_cache)}</div>
         <div class="card-label">Dev Cache</div>
         <div class="card-size">{len(cache_sizes)} dirs</div>
       </div>
-      <div class="dash-card {'zero' if not total_browser else ''}" onclick="nav('browser')">
+      <div class="dash-card {'zero' if not total_browser else ''}" id="card-browser" onclick="nav('browser')">
         <div class="card-icon-wrap"><i data-lucide="globe"></i></div>
         <div class="card-count">{sz(total_browser)}</div>
         <div class="card-label">Browser Cache</div>
         <div class="card-size">{len(browser_caches)} browsers</div>
       </div>
-      <div class="dash-card {'zero' if not node_modules else ''}" onclick="nav('nm')">
+      <div class="dash-card {'zero' if not node_modules else ''}" id="card-nm" onclick="nav('nm')">
         <div class="card-icon-wrap"><i data-lucide="package"></i></div>
         <div class="card-count">{sz(total_node_modules)}</div>
         <div class="card-label">node_modules</div>
@@ -847,7 +935,7 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-s
         <div class="card-label">Large Files</div>
         <div class="card-size">{sz(total_large)}</div>
       </div>
-      <div class="dash-card {'zero' if not login_items else ''}" onclick="nav('login')">
+      <div class="dash-card {'zero' if not login_items else ''}" id="card-login" onclick="nav('login')">
         <div class="card-icon-wrap"><i data-lucide="rocket"></i></div>
         <div class="card-count">{len(login_items)}</div>
         <div class="card-label">Login Items</div>
@@ -1072,13 +1160,14 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-s
   <div class="view" id="view-trash">
     <div class="sec-header">
       <div class="sec-icon-wrap"><i data-lucide="trash-2"></i></div>
-      <div class="sec-title"><h2>Trash</h2><p>{sz(trash['size'])} waiting to be freed</p></div>
+      <div class="sec-title"><h2>Trash</h2><p><span id="trash-sub">{sz(trash['size'])}</span> waiting to be freed</p></div>
     </div>
     <div class="action-bar">
       <button class="delete-btn" onclick="emptyTrash()" style="margin-left:0">Empty Trash</button>
     </div>
     <div class="file-list">
-      {'<div class="file-row"><div class="thumb-ph">🗑️</div><div class="file-info"><div class="file-name">Trash</div><div class="file-folder">~/.Trash</div></div><div class="file-size">' + sz(trash["size"]) + '</div></div>' if trash["size"] else "<div class='empty-state'><p>Trash is empty</p></div>"}
+      <div class="file-row" id="trash-row" {'' if trash["size"] else 'style="display:none"'}><div class="thumb-ph">🗑️</div><div class="file-info"><div class="file-name">Trash</div><div class="file-folder">~/.Trash</div></div><div class="file-size" id="trash-row-size">{sz(trash["size"])}</div></div>
+      <div class="empty-state" id="trash-empty" {'style="display:none"' if trash["size"] else ''}><p>Trash is empty</p></div>
     </div>
   </div>
 
@@ -1088,6 +1177,7 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-s
 <script>
 const API = "{api}";
 const DATA = {sections_data};
+const STATE = {initial_state};
 
 // ── Navigation ────────────────────────────────────────────
 const _NAV_LABELS = {{
@@ -1125,38 +1215,38 @@ function toast(msg, ok=true) {{
 
 // ── Helpers ───────────────────────────────────────────────
 function getChecked(secId) {{
-  return [...document.querySelectorAll(`#view-${{secId}} .cb:checked`)].map(c => c.value);
+  return [...document.querySelectorAll(`#view-${{secId}} .cb:checked:not(:disabled)`)].map(c => c.value);
 }}
 function toggleAll(secId) {{
-  const cbs = document.querySelectorAll(`#view-${{secId}} .cb`);
+  const cbs = document.querySelectorAll(`#view-${{secId}} .cb:not(:disabled)`);
   const all = [...cbs].every(c => c.checked);
   cbs.forEach(c => c.checked = !all);
   updateCount(secId);
 }}
 function updateCount(secId) {{
-  const checked = document.querySelectorAll(`#view-${{secId}} .cb:checked`).length;
-  const total = document.querySelectorAll(`#view-${{secId}} .cb`).length;
+  const checked = document.querySelectorAll(`#view-${{secId}} .cb:checked:not(:disabled)`).length;
+  const total = document.querySelectorAll(`#view-${{secId}} .cb:not(:disabled)`).length;
   const el = document.getElementById('cnt-' + secId);
   if (el) el.textContent = total > 0 ? `${{checked}} of ${{total}} selected` : '';
 }}
-function markCleaned(secId) {{
-  document.querySelectorAll(`#view-${{secId}} .cb:checked`).forEach(cb => {{
-    cb.closest('.file-row').classList.add('cleaned');
-    cb.checked = false;
-  }});
-  updateCount(secId);
-}}
 async function post(endpoint, body) {{
+  let r;
   try {{
-    const r = await fetch(API + endpoint, {{
+    r = await fetch(API + endpoint, {{
       method: 'POST', headers: {{'Content-Type': 'application/json'}},
       body: JSON.stringify(body)
     }});
-    return r.json();
   }} catch(e) {{
     toast('Connection error — is Sweep running?', false);
-    return {{ok: 0, fail: 0}};
+    return null;
   }}
+  let j = null;
+  try {{ j = await r.json(); }} catch(e) {{}}
+  if (!r.ok || !j) {{
+    toast('Something went wrong — press Scan Again to see the current state', false);
+    return null;
+  }}
+  return j;
 }}
 document.addEventListener('change', e => {{
   if (e.target.classList.contains('cb')) {{
@@ -1164,6 +1254,70 @@ document.addEventListener('change', e => {{
     if (view) updateCount(view.id.replace('view-', ''));
   }}
 }});
+
+// ── Live totals ───────────────────────────────────────────
+// STATE holds what is still on disk per section. Cleans subtract only the items
+// the server confirmed; anything moved to the Bin is added to Trash.
+function fmtBytes(n) {{
+  for (const unit of ['B', 'KB', 'MB', 'GB']) {{
+    if (n < 1024) return `${{Math.round(n)}} ${{unit}}`;
+    n /= 1024;
+  }}
+  return `${{n.toFixed(1)}} TB`;
+}}
+const _SIZE_BADGES = new Set(['browser', 'nm', 'cache', 'trash']);
+const _CARD_SUB = {{ cache: 'dirs', browser: 'browsers', nm: 'folders' }};
+function setText(id, text) {{ const el = document.getElementById(id); if (el) el.textContent = text; }}
+function renderTotals() {{
+  for (const [sec, st] of Object.entries(STATE)) {{
+    const badge = document.getElementById('badge-' + sec);
+    if (badge) {{
+      const has = sec === 'trash' ? st.bytes > 0 : st.count > 0;
+      badge.classList.toggle('has-items', has);
+      if (_SIZE_BADGES.has(sec)) badge.textContent = has ? fmtBytes(st.bytes) : '0 B';
+      else badge.textContent = (st.capped && st.count > 0) ? `${{st.count}}+` : String(st.count);
+    }}
+    const card = document.getElementById('card-' + sec);
+    if (card) {{
+      const countEl = card.querySelector('.card-count');
+      const sizeEl = card.querySelector('.card-size');
+      if (_CARD_SUB[sec]) {{
+        countEl.textContent = fmtBytes(st.bytes);
+        sizeEl.textContent = `${{st.count}} ${{_CARD_SUB[sec]}}`;
+        card.classList.toggle('zero', st.count === 0 || st.bytes === 0);
+      }} else {{
+        countEl.textContent = String(st.count);
+        if (sec !== 'login') sizeEl.textContent = fmtBytes(st.bytes);
+        card.classList.toggle('zero', st.count === 0);
+      }}
+    }}
+  }}
+  const recoverable = STATE.cache.bytes + STATE.browser.bytes + STATE.nm.bytes
+                    + STATE.rec.bytes + STATE.trash.bytes + STATE.mail.bytes;
+  const files = STATE.screenshots.count + STATE.bad.count + STATE.dupes.count + STATE.downloads.count;
+  setText('hero-recoverable', fmtBytes(recoverable));
+  setText('hero-files', String(files));
+  setText('pill-caches', fmtBytes(STATE.cache.bytes + STATE.browser.bytes));
+  setText('pill-files', String(files));
+  setText('pill-trash', fmtBytes(STATE.trash.bytes));
+  setText('trash-sub', fmtBytes(STATE.trash.bytes));
+  setText('trash-row-size', fmtBytes(STATE.trash.bytes));
+  const trashRow = document.getElementById('trash-row');
+  const trashEmpty = document.getElementById('trash-empty');
+  if (trashRow) trashRow.style.display = STATE.trash.bytes > 0 ? '' : 'none';
+  if (trashEmpty) trashEmpty.style.display = STATE.trash.bytes > 0 ? 'none' : '';
+}}
+// binBytes: how much of the removed size actually landed in the Bin just now.
+function subtract(sec, bytes, n, binBytes) {{
+  const st = STATE[sec];
+  if (!st) return;
+  st.bytes = Math.max(0, st.bytes - bytes);
+  st.count = Math.max(0, st.count - n);
+  if (binBytes > 0) {{
+    STATE.trash.bytes += binBytes;
+    STATE.trash.count = 1;
+  }}
+}}
 
 // ── Clean actions ─────────────────────────────────────────
 function hintRescan() {{
@@ -1173,61 +1327,99 @@ function hintRescan() {{
   btn.style.background = 'var(--accent)';
   btn.style.color = '#fff';
 }}
-async function cleanFiles(secId, endpoint) {{
-  const paths = getChecked(secId);
-  if (!paths.length) {{ toast('Nothing selected', false); return; }}
-  const r = await post(endpoint, {{paths}});
-  markCleaned(secId);
-  toast(`Moved ${{r.ok}} item(s) to Bin${{r.fail ? ' · ' + r.fail + ' failed' : ''}}`);
-  hintRescan();
+function checkedBoxes(secId) {{
+  return [...document.querySelectorAll(`#view-${{secId}} .cb:checked:not(:disabled)`)];
 }}
-async function cleanCaches() {{
-  const dirs = getChecked('cache');
-  if (!dirs.length) {{ toast('Nothing selected', false); return; }}
-  const r = await post('/clean/caches', {{dirs}});
-  markCleaned('cache');
-  toast(`Cleared ${{r.ok}} cache dir(s)${{r.fail ? ' · ' + r.fail + ' failed' : ''}}`);
-  hintRescan();
+// Mark only the rows the server confirmed, and subtract them from STATE.
+// Items in r.gone were already removed elsewhere (e.g. the same file listed in two
+// sections): they leave this section, but their bytes already went to Trash.
+function applyResult(secId, boxes, r, toBin) {{
+  const failed = new Set(r.failed || []);
+  const gone = new Set(r.gone || []);
+  let bytes = 0, binBytes = 0, n = 0;
+  for (const cb of boxes) {{
+    if (failed.has(cb.value)) continue;
+    const row = cb.closest('.file-row');
+    const size = Number(row?.dataset.size) || 0;
+    bytes += size;
+    if (!gone.has(cb.value)) binBytes += size;
+    n++;
+    row?.classList.add('cleaned');
+    cb.checked = false;
+    cb.disabled = true;
+  }}
+  subtract(secId, bytes, n, toBin ? binBytes : 0);
+  updateCount(secId);
+  renderTotals();
+  return {{ n, fail: failed.size }};
 }}
-async function cleanNodeModules() {{
-  const paths = getChecked('nm');
-  if (!paths.length) {{ toast('Nothing selected', false); return; }}
-  const r = await post('/clean/node_modules', {{paths}});
-  markCleaned('nm');
-  toast(`Moved ${{r.ok}} node_modules folder(s) to Bin`);
-  hintRescan();
+async function cleanSection(secId, endpoint, key, toBin, message, hint = true) {{
+  const boxes = checkedBoxes(secId);
+  if (!boxes.length) {{ toast('Nothing selected', false); return; }}
+  const r = await post(endpoint, {{ [key]: boxes.map(b => b.value) }});
+  if (!r) return;
+  const {{ n, fail }} = applyResult(secId, boxes, r, toBin);
+  toast(message(n) + (fail ? ` · ${{fail}} failed or only partly cleaned — Scan Again to check` : ''), n > 0 || !fail);
+  if ((n || fail) && hint) hintRescan();
+}}
+function cleanFiles(secId, endpoint) {{
+  return cleanSection(secId, endpoint, 'paths', true, n => `Moved ${{n}} item(s) to Bin`);
+}}
+function cleanCaches() {{
+  return cleanSection('cache', '/clean/caches', 'dirs', true, n => `Cleared ${{n}} cache dir(s)`);
+}}
+function cleanNodeModules() {{
+  return cleanSection('nm', '/clean/node_modules', 'paths', true, n => `Moved ${{n}} node_modules folder(s) to Bin`);
+}}
+function cleanLangFiles() {{
+  return cleanSection('lang', '/clean/lang', 'paths', false, n => `Deleted ${{n}} language pack(s)`);
+}}
+function cleanLoginItems() {{
+  return cleanSection('login', '/clean/login_items', 'names', false, n => `Removed ${{n}} login item(s) from startup`, false);
 }}
 async function cleanBrowserCaches() {{
-  const r = await post('/clean/caches', {{dirs: DATA.browser_dirs}});
-  toast(`Moved ${{r.ok}} browser cache(s) to Bin`);
-  hintRescan();
+  const rows = [...document.querySelectorAll('#view-browser .file-row[data-browser]:not(.cleaned)')];
+  const dirs = rows.flatMap(row => DATA.browser_dirs[row.dataset.browser] || []);
+  if (!dirs.length) {{ toast('No browser caches to clear', false); return; }}
+  const r = await post('/clean/caches', {{dirs}});
+  if (!r) return;
+  const failed = new Set(r.failed || []);
+  const gone = new Set(r.gone || []);
+  let bytes = 0, binBytes = 0, n = 0;
+  for (const row of rows) {{
+    const own = DATA.browser_dirs[row.dataset.browser] || [];
+    if (own.length && own.every(d => !failed.has(d))) {{
+      const size = Number(row.dataset.size) || 0;
+      bytes += size;
+      // already trashed along with a parent folder (e.g. ~/Library/Caches)
+      if (!own.every(d => gone.has(d))) binBytes += size;
+      n++;
+      row.classList.add('cleaned');
+    }}
+  }}
+  subtract('browser', bytes, n, binBytes);
+  renderTotals();
+  toast(`Moved ${{n}} browser cache(s) to Bin` + (failed.size ? ` · ${{failed.size}} folder(s) failed or only partly cleaned` : ''), n > 0 || !failed.size);
+  if (n) hintRescan();
 }}
 async function pruneDocker() {{
   toast('Running docker system prune…');
   const r = await post('/clean/docker', {{}});
+  if (!r) return;
   toast(r.success ? 'Docker pruned ✓' : 'Docker prune failed', r.success);
   if (r.success) hintRescan();
-}}
-async function cleanLangFiles() {{
-  const paths = getChecked('lang');
-  if (!paths.length) {{ toast('Nothing selected', false); return; }}
-  const r = await post('/clean/lang', {{paths}});
-  markCleaned('lang');
-  toast(`Deleted ${{r.ok}} language pack(s)${{r.fail ? ' · ' + r.fail + ' failed' : ''}}`);
-  hintRescan();
-}}
-async function cleanLoginItems() {{
-  const names = getChecked('login');
-  if (!names.length) {{ toast('Nothing selected', false); return; }}
-  const r = await post('/clean/login_items', {{names}});
-  markCleaned('login');
-  toast(`Removed ${{r.ok}} login item(s) from startup${{r.fail ? ' · ' + r.fail + ' failed' : ''}}`);
 }}
 async function emptyTrash() {{
   toast('Emptying Trash…');
   const r = await post('/clean/trash', {{}});
+  if (!r) return;
   toast(r.success ? 'Trash emptied ✓' : 'Could not empty Trash', r.success);
-  if (r.success) hintRescan();
+  if (r.success) {{
+    STATE.trash.bytes = 0;
+    STATE.trash.count = 0;
+    renderTotals();
+    hintRescan();
+  }}
 }}
 function showConfirm(title, body, onOk) {{
   document.getElementById('modal-title').textContent = title;
@@ -1256,13 +1448,13 @@ async function cleanAll() {{
     ...getChecked('rec'), ...getChecked('mail'),
   ];
   let total = 0;
-  if (files.length) {{ const r = await post('/clean/files', {{paths: files}}); total += r.ok; }}
+  if (files.length) {{ const r = await post('/clean/files', {{paths: files}}); total += r ? r.ok : 0; }}
   const cacheDirs = getChecked('cache');
-  if (cacheDirs.length) {{ const r = await post('/clean/caches', {{dirs: cacheDirs}}); total += r.ok; }}
+  if (cacheDirs.length) {{ const r = await post('/clean/caches', {{dirs: cacheDirs}}); total += r ? r.ok : 0; }}
   const nmPaths = getChecked('nm');
-  if (nmPaths.length) {{ const r = await post('/clean/node_modules', {{paths: nmPaths}}); total += r.ok; }}
+  if (nmPaths.length) {{ const r = await post('/clean/node_modules', {{paths: nmPaths}}); total += r ? r.ok : 0; }}
   const langPaths = getChecked('lang');
-  if (langPaths.length) {{ const r = await post('/clean/lang', {{paths: langPaths}}); total += r.ok; }}
+  if (langPaths.length) {{ const r = await post('/clean/lang', {{paths: langPaths}}); total += r ? r.ok : 0; }}
 
   // Immediately zero out the dashboard so it looks clean right away
   document.querySelectorAll('.card-count').forEach(el => el.textContent = '0');
@@ -1283,6 +1475,13 @@ async function cleanAll() {{
 
 async function revealInFinder(path) {{
   await post('/reveal', {{path}});
+}}
+
+async function openFullDiskAccess() {{
+  const r = await post('/open_full_disk_access', {{}});
+  if (!r) return;
+  if (!r.ok) {{ toast('Could not open System Settings — open Privacy & Security › Full Disk Access manually', false); return; }}
+  toast('Add Sweep in Full Disk Access, then rescan');
 }}
 
 // ── Scan Again ────────────────────────────────────────────
